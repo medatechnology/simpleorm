@@ -1,0 +1,4 @@
+#
+alias dir='ls -alF'
+alias md='mkdir'
+alias rd='rm -rf'
