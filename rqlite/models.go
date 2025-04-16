@@ -10,6 +10,22 @@ const (
 	PREFIX_SQLITE_TABLE  = "sqlite_"
 	SCHEMA_TABLE         = "sqlite_master"
 
+	// Default HTTP timeouts
+	// TODO: maybe read this from env or pass it from Config?
+	DEFAULT_CONNECTION_TIMEOUT            = 60 * time.Second
+	DEFAULT_TIMEOUT                       = 60 * time.Second
+	DEFAULT_DIAL_TIMEOUT                  = 60 * time.Second
+	DEFAULT_KEEP_ALIVE                    = 30 * time.Second
+	DEFAULT_TLS_HANDSHAKE_TIMEOUT         = 30 * time.Second
+	DEFAULT_RESPONSE_TIMEOUT              = 60 * time.Second
+	DEFAULT_CONTINUE_TIMEOUT              = 5 * time.Second
+	DEFAULT_MAX_IDLE_CONNECTIONS          = 100
+	DEFAULT_MAX_IDLE_CONNECTIONS_PER_HOST = 100
+	DEFAULT_MAX_CONNECTIONS_PER_HOST      = 1000
+	DEFAULT_IDLE_CONNECTION_TIMEOUT       = 90 * time.Second
+	DEFAULT_RETRY_TIMEOUT                 = 2 * time.Second
+	DEFAULT_MAX_RETRIES                   = 3
+
 	// RQLite API endpoints
 	ENDPOINT_EXECUTE       = "/db/execute"
 	ENDPOINT_QUERY         = "/db/query"
@@ -50,11 +66,6 @@ const (
 	// Delete
 	// Just pass in the ID of the node
 	// curl -XDELETE http://host:4001/remove -d '{"id": "<node ID>"}'
-
-	// Default timeouts
-	DEFAULT_TIMEOUT       = 30 * time.Second
-	DEFAULT_RETRY_TIMEOUT = 2 * time.Second
-	DEFAULT_MAX_RETRIES   = 3
 )
 
 // RqliteDirectConfig holds configuration for direct RQLite connections

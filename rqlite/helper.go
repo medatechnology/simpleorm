@@ -347,6 +347,8 @@ func getTableNameFromSQL(sql string) string {
 	return tableName
 }
 
+// When calling rqlite/status it returns long JSON format we only
+// take what is needed
 func GetStatusInfoFromResponse(raw map[string]interface{}) (orm.NodeStatusStruct, error) {
 	// NOTE: this is the rqlite status return time format
 	layout := time.RFC3339Nano // This is the format for timestamps like the one in the example.

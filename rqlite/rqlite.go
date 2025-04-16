@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"time"
 
 	orm "github.com/medatechnology/simpleorm"
 )
@@ -53,16 +52,16 @@ func NewDatabase(config RqliteDirectConfig) (*RQLiteDirectDB, error) {
 			Timeout: timeout,
 			Transport: &http.Transport{
 				Dial: (&net.Dialer{
-					Timeout:   60 * time.Second,
-					KeepAlive: 30 * time.Second,
+					Timeout:   DEFAULT_TIMEOUT,
+					KeepAlive: DEFAULT_KEEP_ALIVE,
 				}).Dial,
-				TLSHandshakeTimeout:   30 * time.Second,
-				ResponseHeaderTimeout: 60 * time.Second,
-				ExpectContinueTimeout: 5 * time.Second,
-				MaxIdleConns:          100,
-				MaxIdleConnsPerHost:   100,
-				MaxConnsPerHost:       1000,
-				IdleConnTimeout:       90 * time.Second,
+				TLSHandshakeTimeout:   DEFAULT_TLS_HANDSHAKE_TIMEOUT,
+				ResponseHeaderTimeout: DEFAULT_RESPONSE_TIMEOUT,
+				ExpectContinueTimeout: DEFAULT_CONTINUE_TIMEOUT,
+				MaxIdleConns:          DEFAULT_MAX_IDLE_CONNECTIONS,
+				MaxIdleConnsPerHost:   DEFAULT_MAX_IDLE_CONNECTIONS_PER_HOST,
+				MaxConnsPerHost:       DEFAULT_MAX_CONNECTIONS_PER_HOST,
+				IdleConnTimeout:       DEFAULT_IDLE_CONNECTION_TIMEOUT,
 			},
 		},
 	}, nil
