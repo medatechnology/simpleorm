@@ -44,7 +44,7 @@ func (db *RQLiteDirectDB) sendRequest(method, endpoint string, params url.Values
 	for attempt := 0; attempt < db.Config.RetryCount; attempt++ {
 		req, err := http.NewRequest(method, url, body)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %w", err)
+			return nil, fmt.Errorf("%w: failed to create request: %w", ErrRQLiteConnectionFailed, err)
 		}
 
 		// Set content type for POST/PUT requests
@@ -71,7 +71,7 @@ func (db *RQLiteDirectDB) sendRequest(method, endpoint string, params url.Values
 
 			// Special handling for authentication issues
 			if resp.StatusCode == http.StatusUnauthorized {
-				return nil, fmt.Errorf("internal DBMS authentication error: invalid credentials for RQLite server")
+				return nil, fmt.Errorf("%w: invalid credentials for RQLite server", ErrRQLiteUnauthorized)
 			}
 
 			// Create error with status code and response body
@@ -88,7 +88,7 @@ func (db *RQLiteDirectDB) sendRequest(method, endpoint string, params url.Values
 		}
 	}
 
-	return nil, fmt.Errorf("request failed after %d attempts: %w", db.Config.RetryCount, lastErr)
+	return nil, fmt.Errorf("%w: request failed after %d attempts: %w", ErrRQLiteConnectionFailed, db.Config.RetryCount, lastErr)
 }
 
 // execQuery sends a query to the RQLite server
@@ -96,7 +96,7 @@ func (db *RQLiteDirectDB) execQuery(queries []string) (*QueryResponse, error) {
 	// RQLite expects a simple JSON array of query strings
 	requestBody, err := json.Marshal(queries)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal query: %w", err)
+		return nil, fmt.Errorf("%w: failed to marshal query: %w", ErrRQLiteInvalidJSON, err)
 	}
 	// fmt.Println("execQuery RequestBody = ", requestBody)
 	resp, err := db.sendRequest(http.MethodPost, ENDPOINT_QUERY, nil, bytes.NewBuffer(requestBody))
@@ -109,13 +109,13 @@ func (db *RQLiteDirectDB) execQuery(queries []string) (*QueryResponse, error) {
 	var queryResp QueryResponse
 	err = json.NewDecoder(resp.Body).Decode(&queryResp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode query response: %w", err)
+		return nil, fmt.Errorf("%w: failed to decode query response: %w", ErrRQLiteInvalidJSON, err)
 	}
 
 	// Check for errors in any of the results
 	for _, result := range queryResp.Results {
 		if result.Error != "" {
-			return nil, fmt.Errorf("query error: %s", result.Error)
+			return nil, fmt.Errorf("%w: %s", ErrRQLiteQueryFailed, result.Error)
 		}
 	}
 
@@ -127,7 +127,7 @@ func (db *RQLiteDirectDB) execCommand(commands []string) (*ExecuteResponse, erro
 	// RQLite expects a simple JSON array of command strings
 	requestBody, err := json.Marshal(commands)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal commands: %w", err)
+		return nil, fmt.Errorf("%w: failed to marshal commands: %w", ErrRQLiteInvalidJSON, err)
 	}
 
 	resp, err := db.sendRequest(http.MethodPost, ENDPOINT_EXECUTE, nil, bytes.NewBuffer(requestBody))
@@ -145,46 +145,60 @@ func (db *RQLiteDirectDB) execCommand(commands []string) (*ExecuteResponse, erro
 	// Check for errors in any of the results
 	for _, result := range execResp.Results {
 		if result.Error != "" {
-			return nil, fmt.Errorf("execute error: %s", result.Error)
+			return nil, fmt.Errorf("%w: %s", ErrRQLiteExecuteFailed, result.Error)
 		}
 	}
 
 	return &execResp, nil
 }
 
-// execCommandParameterized sends a write command with parameters to the RQLite server
-func (db *RQLiteDirectDB) execCommandParameterized(commands []orm.ParametereizedSQL) (*ExecuteResponse, error) {
-	// Convert to RQLite's expected format for parameterized queries
-	// Each command becomes [statement, param1, param2, ...] or [statement, {param_map}]
-	requestCommands := make([]interface{}, len(commands))
-	for i, cmd := range commands {
+// convertToRQLiteParameterizedFormat converts ORM parameterized SQL to RQLite's expected format.
+// Each statement becomes [statement, param1, param2, ...] or [statement, {param_map}]
+func convertToRQLiteParameterizedFormat(params []orm.ParametereizedSQL) []interface{} {
+	result := make([]interface{}, len(params))
+	for i, param := range params {
 		// Create a slice with the query as the first element
-		paramArray := make([]interface{}, 0, len(cmd.Values)+1)
-		paramArray = append(paramArray, cmd.Query)
+		paramArray := make([]interface{}, 0, len(param.Values)+1)
+		paramArray = append(paramArray, param.Query)
 
 		// Check if this is using named parameters (map) or positional parameters (array)
-		if len(cmd.Values) == 1 {
+		if len(param.Values) == 1 {
 			// Check if the single value is actually a map for named parameters
-			if valMap, ok := cmd.Values[0].(map[string]interface{}); ok {
+			if valMap, ok := param.Values[0].(map[string]interface{}); ok {
 				paramArray = append(paramArray, valMap)
 			} else {
 				// Regular positional parameter
-				paramArray = append(paramArray, cmd.Values[0])
+				paramArray = append(paramArray, param.Values[0])
 			}
 		} else {
 			// Multiple positional parameters
-			// for _, val := range cmd.Values {
-			paramArray = append(paramArray, cmd.Values...)
-			// }
+			paramArray = append(paramArray, param.Values...)
 		}
 
-		requestCommands[i] = paramArray
+		result[i] = paramArray
 	}
+	return result
+}
+
+// checkRQLiteErrors checks for errors in RQLite result set and returns the first error found
+func checkRQLiteErrors(results []interface{}, errorField func(interface{}) string) error {
+	for _, result := range results {
+		if errMsg := errorField(result); errMsg != "" {
+			return fmt.Errorf("%s", errMsg)
+		}
+	}
+	return nil
+}
+
+// execCommandParameterized sends a write command with parameters to the RQLite server
+func (db *RQLiteDirectDB) execCommandParameterized(commands []orm.ParametereizedSQL) (*ExecuteResponse, error) {
+	// Convert to RQLite's expected format
+	requestCommands := convertToRQLiteParameterizedFormat(commands)
 
 	// Encode commands as JSON array
 	requestBody, err := json.Marshal(requestCommands)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal parameterized commands: %w", err)
+		return nil, fmt.Errorf("%w: failed to marshal parameterized commands: %w", ErrRQLiteInvalidJSON, err)
 	}
 
 	resp, err := db.sendRequest(http.MethodPost, ENDPOINT_EXECUTE, nil, bytes.NewBuffer(requestBody))
@@ -202,7 +216,7 @@ func (db *RQLiteDirectDB) execCommandParameterized(commands []orm.Parametereized
 	// Check for errors in any of the results
 	for _, result := range execResp.Results {
 		if result.Error != "" {
-			return nil, fmt.Errorf("execute error: %s", result.Error)
+			return nil, fmt.Errorf("%w: %s", ErrRQLiteExecuteFailed, result.Error)
 		}
 	}
 
@@ -211,37 +225,13 @@ func (db *RQLiteDirectDB) execCommandParameterized(commands []orm.Parametereized
 
 // execQueryParameterized sends a query with parameters to the RQLite server
 func (db *RQLiteDirectDB) execQueryParameterized(queries []orm.ParametereizedSQL) (*QueryResponse, error) {
-	// Convert to RQLite's expected format for parameterized queries
-	// Each query becomes [statement, param1, param2, ...] or [statement, {param_map}]
-	requestQueries := make([]interface{}, len(queries))
-	for i, query := range queries {
-		// Create a slice with the query as the first element
-		paramArray := make([]interface{}, 0, len(query.Values)+1)
-		paramArray = append(paramArray, query.Query)
-
-		// Check if this is using named parameters (map) or positional parameters (array)
-		if len(query.Values) == 1 {
-			// Check if the single value is actually a map for named parameters
-			if valMap, ok := query.Values[0].(map[string]interface{}); ok {
-				paramArray = append(paramArray, valMap)
-			} else {
-				// Regular positional parameter
-				paramArray = append(paramArray, query.Values[0])
-			}
-		} else {
-			// Multiple positional parameters
-			// for _, val := range query.Values {
-			paramArray = append(paramArray, query.Values...)
-			// }
-		}
-
-		requestQueries[i] = paramArray
-	}
+	// Convert to RQLite's expected format
+	requestQueries := convertToRQLiteParameterizedFormat(queries)
 
 	// Encode queries as JSON array
 	requestBody, err := json.Marshal(requestQueries)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal parameterized queries: %w", err)
+		return nil, fmt.Errorf("%w: failed to marshal parameterized queries: %w", ErrRQLiteInvalidJSON, err)
 	}
 
 	resp, err := db.sendRequest(http.MethodPost, ENDPOINT_QUERY, nil, bytes.NewBuffer(requestBody))
@@ -253,13 +243,13 @@ func (db *RQLiteDirectDB) execQueryParameterized(queries []orm.ParametereizedSQL
 	var queryResp QueryResponse
 	err = json.NewDecoder(resp.Body).Decode(&queryResp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode query response: %w", err)
+		return nil, fmt.Errorf("%w: failed to decode query response: %w", ErrRQLiteInvalidJSON, err)
 	}
 
 	// Check for errors in any of the results
 	for _, result := range queryResp.Results {
 		if result.Error != "" {
-			return nil, fmt.Errorf("query error: %s", result.Error)
+			return nil, fmt.Errorf("%w: %s", ErrRQLiteQueryFailed, result.Error)
 		}
 	}
 
@@ -345,6 +335,35 @@ func getTableNameFromSQL(sql string) string {
 	}
 
 	return tableName
+}
+
+// Helper function to extract the SQL operation type from a SQL query
+// This is a best-effort function that returns the primary operation
+func getOperationFromSQL(sql string) string {
+	// Uppercase for case-insensitive matching
+	upperSQL := strings.TrimSpace(strings.ToUpper(sql))
+
+	// Check for common SQL operations
+	if strings.HasPrefix(upperSQL, "SELECT") {
+		return "SELECT"
+	} else if strings.HasPrefix(upperSQL, "INSERT") {
+		return "INSERT"
+	} else if strings.HasPrefix(upperSQL, "UPDATE") {
+		return "UPDATE"
+	} else if strings.HasPrefix(upperSQL, "DELETE") {
+		return "DELETE"
+	} else if strings.HasPrefix(upperSQL, "CREATE") {
+		return "CREATE"
+	} else if strings.HasPrefix(upperSQL, "DROP") {
+		return "DROP"
+	} else if strings.HasPrefix(upperSQL, "ALTER") {
+		return "ALTER"
+	} else if strings.HasPrefix(upperSQL, "REPLACE") {
+		return "REPLACE"
+	}
+
+	// Default to EXEC if we can't determine the operation
+	return "EXEC"
 }
 
 // When calling rqlite/status it returns long JSON format we only

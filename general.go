@@ -2,6 +2,7 @@ package orm
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/medatechnology/goutil/medaerror"
@@ -19,6 +20,40 @@ var (
 	ErrSQLNoRows         medaerror.MedaError = medaerror.MedaError{Message: "select returns no rows"}
 	ErrSQLMoreThanOneRow medaerror.MedaError = medaerror.MedaError{Message: "select returns more than 1 rows"}
 	MAX_MULTIPLE_INSERTS int                 = DEFAULT_MAX_MULTIPLE_INSERTS
+
+	// Security: SQL Injection Protection
+	ErrInvalidFieldName    medaerror.MedaError = medaerror.MedaError{Message: "invalid field name: must contain only alphanumeric characters and underscores"}
+	ErrInvalidOperator     medaerror.MedaError = medaerror.MedaError{Message: "invalid SQL operator: not in allowed list"}
+	ErrEmptyTableName      medaerror.MedaError = medaerror.MedaError{Message: "table name cannot be empty"}
+	ErrInvalidTableName    medaerror.MedaError = medaerror.MedaError{Message: "invalid table name: must contain only alphanumeric characters and underscores"}
+	ErrEmptyConditionField medaerror.MedaError = medaerror.MedaError{Message: "condition field cannot be empty when operator is specified"}
+	ErrMissingPrimaryKey   medaerror.MedaError = medaerror.MedaError{Message: "missing primary key in record data"}
+	ErrSQLMultipleRows     medaerror.MedaError = medaerror.MedaError{Message: "query returned multiple rows when expecting one"}
+
+	// Whitelist of allowed SQL operators to prevent SQL injection
+	allowedOperators = map[string]bool{
+		"=":           true,
+		"!=":          true,
+		"<>":          true,
+		">":           true,
+		"<":           true,
+		">=":          true,
+		"<=":          true,
+		"LIKE":        true,
+		"NOT LIKE":    true,
+		"ILIKE":       true, // PostgreSQL case-insensitive LIKE
+		"IN":          true,
+		"NOT IN":      true,
+		"BETWEEN":     true,
+		"IS":          true,
+		"IS NOT":      true,
+		"IS NULL":     true,
+		"IS NOT NULL": true,
+	}
+
+	// Regular expression for validating SQL identifiers (table/column names)
+	// Allows: letters, numbers, underscores; must start with letter or underscore
+	sqlIdentifierRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 )
 
 // Struct to get the schema from sqlite_master table in SQLite
@@ -152,42 +187,85 @@ func (c *Condition) Or(conditions ...Condition) *Condition {
 
 // ToWhereString converts a Condition struct into a WHERE clause string and parameter values.
 // It handles nested conditions recursively and supports both AND/OR logic.
+// Security: Validates field names and operators to prevent SQL injection attacks.
 // Usage:
 //
-//	whereClause, values := condition.ToWhereString()
+//	whereClause, values, err := condition.ToWhereString()
+//	if err != nil {
+//	    return "", nil, err
+//	}
 //
 // Returns:
 //   - string: SQL WHERE clause with parameterized queries (e.g., "field1 = ? AND (field2 > ?)")
 //   - []interface{}: Slice of values corresponding to the parameters
-func (c *Condition) ToWhereString() (string, []interface{}) {
+//   - error: Validation error if field name or operator is invalid
+func (c *Condition) ToWhereString() (string, []interface{}, error) {
 	var clauses []string
 	var args []interface{}
 
 	if c.Field != "" { // Base case for simple condition
-		clauses = append(clauses, fmt.Sprintf("%s %s ?", c.Field, c.Operator))
+		// Security: Validate field name to prevent SQL injection
+		if err := ValidateFieldName(c.Field); err != nil {
+			return "", nil, err
+		}
+
+		// Security: Validate operator to prevent SQL injection
+		if err := ValidateOperator(c.Operator); err != nil {
+			return "", nil, err
+		}
+
+		// Ensure both field and operator are present
+		if c.Operator == "" {
+			return "", nil, ErrInvalidOperator
+		}
+
+		clauses = append(clauses, fmt.Sprintf("%s %s ?", c.Field, strings.ToUpper(c.Operator)))
 		args = append(args, c.Value)
 	} else { // Handle nested conditions
 		for _, nested := range c.Nested {
-			subClause, subArgs := nested.ToWhereString()
-			clauses = append(clauses, fmt.Sprintf("(%s)", subClause))
-			args = append(args, subArgs...)
+			subClause, subArgs, err := nested.ToWhereString()
+			if err != nil {
+				return "", nil, err
+			}
+			if subClause != "" { // Only append non-empty clauses
+				clauses = append(clauses, fmt.Sprintf("(%s)", subClause))
+				args = append(args, subArgs...)
+			}
 		}
 	}
 
-	return strings.Join(clauses, fmt.Sprintf(" %s ", strings.ToUpper(c.Logic))), args
+	logic := strings.ToUpper(strings.TrimSpace(c.Logic))
+	if logic == "" {
+		logic = "AND" // Default to AND if not specified
+	}
+
+	return strings.Join(clauses, fmt.Sprintf(" %s ", logic)), args, nil
 }
 
 // ToSelectString generates a complete SELECT SQL query string with WHERE, GROUP BY, ORDER BY,
 // and LIMIT/OFFSET clauses based on the Condition struct.
+// Security: Validates table name and delegates to ToWhereString for field/operator validation.
 // Usage:
 //
-//	query, values := condition.ToSelectString("users")
+//	query, values, err := condition.ToSelectString("users")
+//	if err != nil {
+//	    return "", nil, err
+//	}
 //
 // Returns:
 //   - string: Complete SELECT query (e.g., "SELECT * FROM users WHERE age > ? ORDER BY name LIMIT 10")
 //   - []interface{}: Slice of values for the parameterized query
-func (c *Condition) ToSelectString(tableName string) (string, []interface{}) {
-	whereClause, values := c.ToWhereString()
+//   - error: Validation error if table name, field name, or operator is invalid
+func (c *Condition) ToSelectString(tableName string) (string, []interface{}, error) {
+	// Security: Validate table name to prevent SQL injection
+	if err := ValidateTableName(tableName); err != nil {
+		return "", nil, err
+	}
+
+	whereClause, values, err := c.ToWhereString()
+	if err != nil {
+		return "", nil, err
+	}
 
 	orderClause := ""
 	if len(c.OrderBy) > 0 {
@@ -208,14 +286,14 @@ func (c *Condition) ToSelectString(tableName string) (string, []interface{}) {
 		limitClause = fmt.Sprintf("LIMIT %d", c.Limit)
 
 		if c.Offset > 0 {
-			limitClause += fmt.Sprintf("OFFSET %d", c.Offset)
+			limitClause += fmt.Sprintf(" OFFSET %d", c.Offset)
 		}
 	}
 	// If there is no WHERE statement, just do the order and groupby
 	if strings.TrimSpace(whereClause) == "" {
-		return fmt.Sprintf("SELECT * FROM %s %s %s %s", tableName, groupClause, orderClause, limitClause), values
+		return fmt.Sprintf("SELECT * FROM %s %s %s %s", tableName, groupClause, orderClause, limitClause), values, nil
 	}
-	return fmt.Sprintf("SELECT * FROM %s WHERE %s %s %s %s", tableName, whereClause, groupClause, orderClause, limitClause), values
+	return fmt.Sprintf("SELECT * FROM %s WHERE %s %s %s %s", tableName, whereClause, groupClause, orderClause, limitClause), values, nil
 }
 
 // PrintDebug prints debug information about a database schema object.
@@ -233,4 +311,67 @@ func (s SchemaStruct) PrintDebug(sql bool) {
 		rawSql = ""
 	}
 	fmt.Printf("Object [%s] : %s[%s] %s\n", s.ObjectType, s.TableName, s.ObjectName, rawSql)
+}
+
+// ValidateTableName validates a table name to prevent SQL injection.
+// It checks that the name is not empty and contains only alphanumeric characters and underscores.
+// The name must start with a letter or underscore.
+//
+// Usage:
+//
+//	if err := ValidateTableName("users"); err != nil {
+//	    return err
+//	}
+//
+// Returns: error if validation fails, nil otherwise
+func ValidateTableName(tableName string) error {
+	if tableName == "" {
+		return ErrEmptyTableName
+	}
+	if !sqlIdentifierRegex.MatchString(tableName) {
+		return ErrInvalidTableName
+	}
+	return nil
+}
+
+// ValidateFieldName validates a field/column name to prevent SQL injection.
+// It checks that the name contains only alphanumeric characters and underscores.
+// The name must start with a letter or underscore.
+//
+// Usage:
+//
+//	if err := ValidateFieldName("user_id"); err != nil {
+//	    return err
+//	}
+//
+// Returns: error if validation fails, nil otherwise
+func ValidateFieldName(fieldName string) error {
+	if fieldName == "" {
+		return nil // Empty field names are allowed in nested conditions
+	}
+	if !sqlIdentifierRegex.MatchString(fieldName) {
+		return ErrInvalidFieldName
+	}
+	return nil
+}
+
+// ValidateOperator validates a SQL operator against a whitelist to prevent SQL injection.
+// It checks if the operator is in the allowed list of safe SQL operators.
+//
+// Usage:
+//
+//	if err := ValidateOperator("="); err != nil {
+//	    return err
+//	}
+//
+// Returns: error if validation fails, nil otherwise
+func ValidateOperator(operator string) error {
+	if operator == "" {
+		return nil // Empty operators are allowed in nested conditions
+	}
+	upperOp := strings.ToUpper(strings.TrimSpace(operator))
+	if !allowedOperators[upperOp] {
+		return ErrInvalidOperator
+	}
+	return nil
 }

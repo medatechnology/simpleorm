@@ -5,14 +5,17 @@ import (
 	"github.com/rqlite/gorqlite"
 )
 
-func ConditionToParameterized(tableName string, c *orm.Condition) gorqlite.ParameterizedStatement {
-	query, values := c.ToSelectString(tableName)
+func ConditionToParameterized(tableName string, c *orm.Condition) (gorqlite.ParameterizedStatement, error) {
+	query, values, err := c.ToSelectString(tableName)
+	if err != nil {
+		return gorqlite.ParameterizedStatement{}, err
+	}
 	// fmt.Println("DEBUG: query = ", query)
 	// fmt.Println("DEBUG: values = ", values)
 	return gorqlite.ParameterizedStatement{
 		Query:     query,
 		Arguments: values,
-	}
+	}, nil
 }
 
 // convert from 1 simpleORM ParameterizedSQL to gorqlite.ParameterizedStatement

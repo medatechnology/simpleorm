@@ -238,10 +238,15 @@ func (db *RQLiteDirectDB) Peers() ([]string, error) {
 
 // SelectOne selects a single record from the table
 func (db *RQLiteDirectDB) SelectOne(tableName string) (orm.DBRecord, error) {
+	// Security: Validate table name to prevent SQL injection
+	if err := orm.ValidateTableName(tableName); err != nil {
+		return orm.DBRecord{}, orm.WrapSelectError(err, tableName)
+	}
+
 	query := fmt.Sprintf("SELECT * FROM %s LIMIT 1", tableName)
 	resp, err := db.execQuery([]string{query})
 	if err != nil {
-		return orm.DBRecord{}, err
+		return orm.DBRecord{}, orm.WrapErrorWithQuery(err, "SELECT", tableName, query)
 	}
 
 	if len(resp.Results) == 0 || len(resp.Results[0].Values) == 0 {
@@ -250,7 +255,7 @@ func (db *RQLiteDirectDB) SelectOne(tableName string) (orm.DBRecord, error) {
 
 	records, err := queryResultToDBRecord(resp.Results[0], tableName)
 	if err != nil {
-		return orm.DBRecord{}, err
+		return orm.DBRecord{}, orm.WrapSelectError(err, tableName)
 	}
 
 	return records[0], nil
@@ -258,17 +263,27 @@ func (db *RQLiteDirectDB) SelectOne(tableName string) (orm.DBRecord, error) {
 
 // SelectMany selects multiple records from the table
 func (db *RQLiteDirectDB) SelectMany(tableName string) (orm.DBRecords, error) {
+	// Security: Validate table name to prevent SQL injection
+	if err := orm.ValidateTableName(tableName); err != nil {
+		return nil, orm.WrapSelectError(err, tableName)
+	}
+
 	query := fmt.Sprintf("SELECT * FROM %s", tableName)
 	resp, err := db.execQuery([]string{query})
 	if err != nil {
-		return nil, err
+		return nil, orm.WrapErrorWithQuery(err, "SELECT", tableName, query)
 	}
 
 	if len(resp.Results) == 0 || len(resp.Results[0].Values) == 0 {
 		return nil, orm.ErrSQLNoRows
 	}
 
-	return queryResultToDBRecord(resp.Results[0], tableName)
+	records, err := queryResultToDBRecord(resp.Results[0], tableName)
+	if err != nil {
+		return nil, orm.WrapSelectError(err, tableName)
+	}
+
+	return records, nil
 }
 
 // SelectOneWithCondition selects a single record with a condition
@@ -277,7 +292,11 @@ func (db *RQLiteDirectDB) SelectOneWithCondition(tableName string, condition *or
 		return db.SelectOne(tableName)
 	}
 
-	query, params := condition.ToSelectString(tableName)
+	query, params, err := condition.ToSelectString(tableName)
+	if err != nil {
+		return orm.DBRecord{}, orm.WrapSelectError(fmt.Errorf("failed to build query: %w", err), tableName)
+	}
+
 	// Add LIMIT 1 to ensure we only get one record if not already specified
 	if !strings.Contains(strings.ToUpper(query), "LIMIT") {
 		query += " LIMIT 1"
@@ -290,7 +309,7 @@ func (db *RQLiteDirectDB) SelectOneWithCondition(tableName string, condition *or
 
 	resp, err := db.execQueryParameterized([]orm.ParametereizedSQL{paramSQL})
 	if err != nil {
-		return orm.DBRecord{}, err
+		return orm.DBRecord{}, orm.WrapErrorWithQuery(err, "SELECT", tableName, query)
 	}
 
 	if len(resp.Results) == 0 || len(resp.Results[0].Values) == 0 {
@@ -299,7 +318,7 @@ func (db *RQLiteDirectDB) SelectOneWithCondition(tableName string, condition *or
 
 	records, err := queryResultToDBRecord(resp.Results[0], tableName)
 	if err != nil {
-		return orm.DBRecord{}, err
+		return orm.DBRecord{}, orm.WrapSelectError(err, tableName)
 	}
 
 	return records[0], nil
@@ -311,7 +330,11 @@ func (db *RQLiteDirectDB) SelectManyWithCondition(tableName string, condition *o
 		return db.SelectMany(tableName)
 	}
 
-	query, params := condition.ToSelectString(tableName)
+	query, params, err := condition.ToSelectString(tableName)
+	if err != nil {
+		return nil, orm.WrapSelectError(fmt.Errorf("failed to build query: %w", err), tableName)
+	}
+
 	paramSQL := orm.ParametereizedSQL{
 		Query:  query,
 		Values: params,
@@ -319,21 +342,27 @@ func (db *RQLiteDirectDB) SelectManyWithCondition(tableName string, condition *o
 
 	resp, err := db.execQueryParameterized([]orm.ParametereizedSQL{paramSQL})
 	if err != nil {
-		return nil, err
+		return nil, orm.WrapErrorWithQuery(err, "SELECT", tableName, query)
 	}
 
 	if len(resp.Results) == 0 || len(resp.Results[0].Values) == 0 {
 		return nil, orm.ErrSQLNoRows
 	}
 
-	return queryResultToDBRecord(resp.Results[0], tableName)
+	records, err := queryResultToDBRecord(resp.Results[0], tableName)
+	if err != nil {
+		return nil, orm.WrapSelectError(err, tableName)
+	}
+
+	return records, nil
 }
 
 // SelectOneSQL executes a single SQL query and returns the results
 func (db *RQLiteDirectDB) SelectOneSQL(sql string) (orm.DBRecords, error) {
 	resp, err := db.execQuery([]string{sql})
 	if err != nil {
-		return nil, err
+		tableName := getTableNameFromSQL(sql)
+		return nil, orm.WrapErrorWithQuery(err, "SELECT", tableName, sql)
 	}
 
 	if len(resp.Results) == 0 {
@@ -346,7 +375,7 @@ func (db *RQLiteDirectDB) SelectOneSQL(sql string) (orm.DBRecords, error) {
 	tableName := getTableNameFromSQL(sql)
 	records, err := queryResultToDBRecord(resp.Results[0], tableName)
 	if err != nil {
-		return nil, err
+		return nil, orm.WrapSelectError(err, tableName)
 	}
 
 	return records, nil
@@ -356,7 +385,7 @@ func (db *RQLiteDirectDB) SelectOneSQL(sql string) (orm.DBRecords, error) {
 func (db *RQLiteDirectDB) SelectManySQL(sqls []string) ([]orm.DBRecords, error) {
 	resp, err := db.execQuery(sqls)
 	if err != nil {
-		return nil, err
+		return nil, orm.WrapError(err, "SELECT", "")
 	}
 
 	results := make([]orm.DBRecords, 0, len(resp.Results))
@@ -369,7 +398,8 @@ func (db *RQLiteDirectDB) SelectManySQL(sqls []string) ([]orm.DBRecords, error) 
 		}
 
 		if result.Error != "" {
-			return results, fmt.Errorf("query error: %s", result.Error)
+			queryErr := fmt.Errorf("query error: %s", result.Error)
+			return results, orm.WrapErrorWithQuery(queryErr, "SELECT", tableName, sqls[i])
 		}
 
 		records, err := queryResultToDBRecord(result, tableName)
@@ -379,7 +409,7 @@ func (db *RQLiteDirectDB) SelectManySQL(sqls []string) ([]orm.DBRecords, error) 
 				results = append(results, orm.DBRecords{})
 				continue
 			}
-			return results, err
+			return results, orm.WrapSelectError(err, tableName)
 		}
 
 		results = append(results, records)
@@ -392,7 +422,7 @@ func (db *RQLiteDirectDB) SelectManySQL(sqls []string) ([]orm.DBRecords, error) 
 func (db *RQLiteDirectDB) SelectOnlyOneSQL(sql string) (orm.DBRecord, error) {
 	records, err := db.SelectOneSQL(sql)
 	if err != nil {
-		return orm.DBRecord{}, err
+		return orm.DBRecord{}, err // Already wrapped in SelectOneSQL
 	}
 
 	// Check if we got exactly one row
@@ -402,7 +432,8 @@ func (db *RQLiteDirectDB) SelectOnlyOneSQL(sql string) (orm.DBRecord, error) {
 
 	// because OnlyOne, if there are more than 1, that counts as error
 	if len(records) > 1 {
-		return orm.DBRecord{}, orm.ErrSQLMoreThanOneRow
+		tableName := getTableNameFromSQL(sql)
+		return orm.DBRecord{}, orm.WrapSelectError(orm.ErrSQLMoreThanOneRow, tableName)
 	}
 
 	return records[0], nil
@@ -412,7 +443,8 @@ func (db *RQLiteDirectDB) SelectOnlyOneSQL(sql string) (orm.DBRecord, error) {
 func (db *RQLiteDirectDB) SelectOneSQLParameterized(paramSQL orm.ParametereizedSQL) (orm.DBRecords, error) {
 	resp, err := db.execQueryParameterized([]orm.ParametereizedSQL{paramSQL})
 	if err != nil {
-		return nil, err
+		tableName := getTableNameFromSQL(paramSQL.Query)
+		return nil, orm.WrapErrorWithQuery(err, "SELECT", tableName, paramSQL.Query)
 	}
 
 	if len(resp.Results) == 0 {
@@ -423,7 +455,7 @@ func (db *RQLiteDirectDB) SelectOneSQLParameterized(paramSQL orm.ParametereizedS
 	tableName := getTableNameFromSQL(paramSQL.Query)
 	records, err := queryResultToDBRecord(resp.Results[0], tableName)
 	if err != nil {
-		return nil, err
+		return nil, orm.WrapSelectError(err, tableName)
 	}
 
 	return records, nil
@@ -433,7 +465,7 @@ func (db *RQLiteDirectDB) SelectOneSQLParameterized(paramSQL orm.ParametereizedS
 func (db *RQLiteDirectDB) SelectManySQLParameterized(paramSQLs []orm.ParametereizedSQL) ([]orm.DBRecords, error) {
 	resp, err := db.execQueryParameterized(paramSQLs)
 	if err != nil {
-		return nil, err
+		return nil, orm.WrapError(err, "SELECT", "")
 	}
 
 	results := make([]orm.DBRecords, 0, len(resp.Results))
@@ -446,7 +478,12 @@ func (db *RQLiteDirectDB) SelectManySQLParameterized(paramSQLs []orm.Parameterei
 		}
 
 		if result.Error != "" {
-			return results, fmt.Errorf("query error: %s", result.Error)
+			queryErr := fmt.Errorf("query error: %s", result.Error)
+			query := ""
+			if i < len(paramSQLs) {
+				query = paramSQLs[i].Query
+			}
+			return results, orm.WrapErrorWithQuery(queryErr, "SELECT", tableName, query)
 		}
 
 		records, err := queryResultToDBRecord(result, tableName)
@@ -456,7 +493,7 @@ func (db *RQLiteDirectDB) SelectManySQLParameterized(paramSQLs []orm.Parameterei
 				results = append(results, orm.DBRecords{})
 				continue
 			}
-			return results, err
+			return results, orm.WrapSelectError(err, tableName)
 		}
 
 		results = append(results, records)
@@ -469,7 +506,7 @@ func (db *RQLiteDirectDB) SelectManySQLParameterized(paramSQLs []orm.Parameterei
 func (db *RQLiteDirectDB) SelectOnlyOneSQLParameterized(paramSQL orm.ParametereizedSQL) (orm.DBRecord, error) {
 	records, err := db.SelectOneSQLParameterized(paramSQL)
 	if err != nil {
-		return orm.DBRecord{}, err
+		return orm.DBRecord{}, err // Already wrapped in SelectOneSQLParameterized
 	}
 
 	// Check if we got exactly one row
@@ -478,7 +515,8 @@ func (db *RQLiteDirectDB) SelectOnlyOneSQLParameterized(paramSQL orm.Parameterei
 	}
 	// because OnlyOne, if there are more than 1, that counts as error
 	if len(records) > 1 {
-		return orm.DBRecord{}, orm.ErrSQLMoreThanOneRow
+		tableName := getTableNameFromSQL(paramSQL.Query)
+		return orm.DBRecord{}, orm.WrapSelectError(orm.ErrSQLMoreThanOneRow, tableName)
 	}
 
 	return records[0], nil
@@ -488,7 +526,10 @@ func (db *RQLiteDirectDB) SelectOnlyOneSQLParameterized(paramSQL orm.Parameterei
 func (db *RQLiteDirectDB) ExecOneSQL(sql string) orm.BasicSQLResult {
 	resp, err := db.execCommand([]string{sql})
 	if err != nil {
-		return orm.BasicSQLResult{Error: err}
+		tableName := getTableNameFromSQL(sql)
+		operation := getOperationFromSQL(sql)
+		wrappedErr := orm.WrapErrorWithQuery(err, operation, tableName, sql)
+		return orm.BasicSQLResult{Error: wrappedErr}
 	}
 
 	if len(resp.Results) == 0 {
@@ -503,7 +544,10 @@ func (db *RQLiteDirectDB) ExecOneSQL(sql string) orm.BasicSQLResult {
 func (db *RQLiteDirectDB) ExecOneSQLParameterized(paramSQL orm.ParametereizedSQL) orm.BasicSQLResult {
 	resp, err := db.execCommandParameterized([]orm.ParametereizedSQL{paramSQL})
 	if err != nil {
-		return orm.BasicSQLResult{Error: err}
+		tableName := getTableNameFromSQL(paramSQL.Query)
+		operation := getOperationFromSQL(paramSQL.Query)
+		wrappedErr := orm.WrapErrorWithQuery(err, operation, tableName, paramSQL.Query)
+		return orm.BasicSQLResult{Error: wrappedErr}
 	}
 
 	if len(resp.Results) == 0 {
@@ -518,7 +562,7 @@ func (db *RQLiteDirectDB) ExecOneSQLParameterized(paramSQL orm.ParametereizedSQL
 func (db *RQLiteDirectDB) ExecManySQL(sqls []string) ([]orm.BasicSQLResult, error) {
 	resp, err := db.execCommand(sqls)
 	if err != nil {
-		return nil, err
+		return nil, orm.WrapError(err, "EXEC", "")
 	}
 
 	return executeResultsToBasicSQLResults(resp.Results), nil
@@ -528,7 +572,7 @@ func (db *RQLiteDirectDB) ExecManySQL(sqls []string) ([]orm.BasicSQLResult, erro
 func (db *RQLiteDirectDB) ExecManySQLParameterized(paramSQLs []orm.ParametereizedSQL) ([]orm.BasicSQLResult, error) {
 	resp, err := db.execCommandParameterized(paramSQLs)
 	if err != nil {
-		return nil, err
+		return nil, orm.WrapError(err, "EXEC", "")
 	}
 
 	return executeResultsToBasicSQLResults(resp.Results), nil
@@ -548,7 +592,7 @@ func (db *RQLiteDirectDB) InsertOneDBRecord(record orm.DBRecord, queue bool) orm
 
 // InsertManyDBRecords inserts multiple records
 func (db *RQLiteDirectDB) InsertManyDBRecords(records []orm.DBRecord, queue bool) ([]orm.BasicSQLResult, error) {
-	var paramSQLs []orm.ParametereizedSQL
+	paramSQLs := make([]orm.ParametereizedSQL, 0, len(records))
 
 	for _, record := range records {
 		sql, values := record.ToInsertSQLParameterized()
@@ -566,15 +610,19 @@ func (db *RQLiteDirectDB) InsertManyDBRecords(records []orm.DBRecord, queue bool
 // InsertManyDBRecordsSameTable inserts multiple records into the same table
 func (db *RQLiteDirectDB) InsertManyDBRecordsSameTable(records []orm.DBRecord, queue bool) ([]orm.BasicSQLResult, error) {
 	if len(records) == 0 {
-		return nil, fmt.Errorf("no records to insert")
+		return nil, orm.WrapInsertError(fmt.Errorf("no records to insert"), "")
 	}
 
 	// For records of the same table, we can optimize by using the batch insert functionality
-	// tableName := records[0].TableName
+	tableName := records[0].TableName
 	paramSQLs := orm.DBRecords(records).ToInsertSQLParameterized()
 
 	// RQLite doesn't have a queue mechanism like gorqlite, so we ignore the queue parameter
-	return db.ExecManySQLParameterized(paramSQLs)
+	results, err := db.ExecManySQLParameterized(paramSQLs)
+	if err != nil {
+		return results, orm.WrapInsertError(err, tableName)
+	}
+	return results, nil
 }
 
 // InsertOneTableStruct inserts a single table struct
@@ -590,16 +638,16 @@ func (db *RQLiteDirectDB) InsertOneTableStruct(obj orm.TableStruct, queue bool) 
 // InsertManyTableStructs inserts multiple table structs
 func (db *RQLiteDirectDB) InsertManyTableStructs(objs []orm.TableStruct, queue bool) ([]orm.BasicSQLResult, error) {
 	if len(objs) == 0 {
-		return nil, fmt.Errorf("no objects to insert")
+		return nil, orm.WrapInsertError(fmt.Errorf("no objects to insert"), "")
 	}
 
-	records := make([]orm.DBRecord, len(objs))
-	for i, obj := range objs {
+	records := make([]orm.DBRecord, 0, len(objs))
+	for _, obj := range objs {
 		record, err := orm.TableStructToDBRecord(obj)
 		if err != nil {
-			return nil, err
+			return nil, orm.WrapInsertError(err, obj.TableName())
 		}
-		records[i] = record
+		records = append(records, record)
 	}
 
 	// Check if all records are for the same table
