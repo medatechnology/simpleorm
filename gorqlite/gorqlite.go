@@ -72,7 +72,10 @@ func (db RQLiteDB) GetSchema(hideSQL, hideSureSQL bool) []orm.SchemaStruct {
 	if err == nil {
 		// if no error, convert to SchemaStruct
 		for _, t := range res {
-			tableName := t.Data["tbl_name"].(string)
+			tableName, ok := t.Data["tbl_name"].(string)
+			if !ok {
+				continue // Skip if tbl_name is not a string
+			}
 			if !(strings.HasPrefix(tableName, PREFIX_SQLITE_TABLE) && hideSQL) &&
 				!(strings.HasPrefix(tableName, PREFIX_SURESQL_TABLE) && hideSureSQL) {
 				schemas = append(schemas, object.MapToStruct[orm.SchemaStruct](t.Data))
@@ -84,22 +87,41 @@ func (db RQLiteDB) GetSchema(hideSQL, hideSureSQL bool) []orm.SchemaStruct {
 
 // Returns the status of the database, for Rqlite this will also return the peers and leaders
 // Can use this as ping-pong as well
-func (db RQLiteDB) Status() ([]string, error) {
-	var nodes []string
+func (db RQLiteDB) Status() (orm.NodeStatusStruct, error) {
+	var status orm.NodeStatusStruct
+	status.DBMS = "rqlite"
+	status.DBMSDriver = "gorqlite"
+	status.URL = db.Config.URL
+
 	leader, err := db.conn.Leader()
 	if err != nil {
 		simplelog.LogErr(err, "error getting leader")
-		return nodes, fmt.Errorf("error getting leader")
+		return status, fmt.Errorf("error getting leader: %w", err)
 	}
-	nodes = append(nodes, leader)
+	status.Leader = leader
+
 	peers, err := db.conn.Peers()
 	if err != nil {
 		simplelog.LogErr(err, "error getting peers")
-		return nodes, fmt.Errorf("error getting leader")
+		return status, fmt.Errorf("error getting peers: %w", err)
 	}
-	nodes = append(nodes, peers...)
-	// statusStr := fmt.Sprintf("RQLite connected and alive\nleader:%s\nPeers: %v", leader, peers)
-	return nodes, nil
+
+	// Convert peers list to map
+	status.Peers = make(map[int]orm.StatusStruct)
+	for i, peer := range peers {
+		peerStatus := orm.StatusStruct{
+			URL:        peer,
+			DBMS:       "rqlite",
+			DBMSDriver: "gorqlite",
+			NodeNumber: i + 1,
+		}
+		status.Peers[i+1] = peerStatus
+	}
+
+	status.Nodes = len(peers) + 1 // +1 for leader
+	status.IsLeader = (leader == db.Config.URL)
+
+	return status, nil
 }
 
 // NOTE: This is almost not used because very rare cases where we need to select from table without
@@ -146,8 +168,10 @@ func (db RQLiteDB) SelectOne(tableName string) (orm.DBRecord, error) {
 // Will return only 1 row of type DBRecord and error if any.
 func (db RQLiteDB) SelectOneWithCondition(tableName string, condition *orm.Condition) (orm.DBRecord, error) {
 	if condition != nil {
-		// statement := condition.ToParameterized(tableName)
-		statement := ConditionToParameterized(tableName, condition)
+		statement, err := ConditionToParameterized(tableName, condition)
+		if err != nil {
+			return orm.DBRecord{}, fmt.Errorf("failed to build query: %w", err)
+		}
 
 		qr, err := db.conn.QueryOneParameterized(statement)
 		if err != nil {
@@ -203,8 +227,10 @@ func (db RQLiteDB) SelectMany(tableName string) (orm.DBRecords, error) {
 // Select many rows (returned as []DBRecords) with condition.
 func (db RQLiteDB) SelectManyWithCondition(tableName string, condition *orm.Condition) ([]orm.DBRecord, error) {
 	var records []orm.DBRecord
-	// statement := condition.ToParameterized(tableName)
-	statement := ConditionToParameterized(tableName, condition)
+	statement, err := ConditionToParameterized(tableName, condition)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build query: %w", err)
+	}
 	// simplelog.LogThis(statement.Query + ";" + fmt.Sprintln(statement.Arguments))
 	qr, err := db.conn.QueryOneParameterized(statement)
 	if err != nil {

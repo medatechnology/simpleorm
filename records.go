@@ -111,11 +111,20 @@ func (records DBRecords) ToInsertSQLParameterized() []ParametereizedSQL {
 		return nil
 	}
 
+	// Security: Nil check to prevent panic
+	if records[0].Data == nil {
+		return nil
+	}
+
 	// All records should have the same structure, use the first one as template
 	tableName := records[0].TableName
 
 	// Get column names from the first record
 	numFields := len(records[0].Data)
+	if numFields == 0 {
+		return nil // No fields to insert
+	}
+
 	columns := make([]string, 0, numFields)
 	for key := range records[0].Data {
 		columns = append(columns, key)
@@ -186,11 +195,20 @@ func (records DBRecords) ToInsertSQLRaw() []string {
 		return nil
 	}
 
+	// Security: Nil check to prevent panic
+	if records[0].Data == nil {
+		return nil
+	}
+
 	// All records should have the same structure, use the first one as template
 	tableName := records[0].TableName
 
 	// Get column names from the first record
 	numFields := len(records[0].Data)
+	if numFields == 0 {
+		return nil // No fields to insert
+	}
+
 	columns := make([]string, 0, numFields)
 	for key := range records[0].Data {
 		columns = append(columns, key)
