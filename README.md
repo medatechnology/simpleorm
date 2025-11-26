@@ -7,10 +7,13 @@ A simple, flexible Object-Relational Mapping (ORM) library for Go that provides 
 - **Database Agnostic**: Unified interface that works across different database systems
 - **Flexible Querying**: Support for raw SQL, parameterized queries, and condition-based queries
 - **Advanced Condition Builder**: Build complex nested queries with AND/OR logic
+- **Complex Query Support**: JOINs, aggregations, GROUP BY, HAVING, DISTINCT, and CTEs
+- **Type-Safe JOINs**: Multiple JOIN types (INNER, LEFT, RIGHT, FULL, CROSS) with validation
 - **Batch Operations**: Efficient bulk insert operations with automatic batching
 - **Schema Management**: Built-in schema inspection and management
 - **Status Monitoring**: Comprehensive database status and health monitoring
 - **Connection Management**: Robust connection handling with retry logic
+- **SQL Injection Protection**: Built-in validation and parameterized queries
 
 ## Table of Contents
 
@@ -19,6 +22,7 @@ A simple, flexible Object-Relational Mapping (ORM) library for Go that provides 
 - [Core Concepts](#core-concepts)
 - [Database Operations](#database-operations)
 - [Advanced Condition Queries](#advanced-condition-queries)
+- [Complex Queries (JOINs and Aggregations)](#complex-queries-joins-and-aggregations)
 - [Batch Operations](#batch-operations)
 - [Error Handling](#error-handling)
 - [Performance Tips](#performance-tips)
@@ -586,6 +590,447 @@ fmt.Printf("Parameters: %v\n", values)
 // Output:
 // Generated SQL: SELECT * FROM users WHERE (age BETWEEN ? AND ? AND active = ?) ORDER BY name ASC LIMIT 10
 // Parameters: [18 65 true]
+```
+
+## Complex Queries (JOINs and Aggregations)
+
+SimpleORM now supports complex queries with JOINs, custom SELECT fields, GROUP BY, HAVING, and more through the `ComplexQuery` struct. This provides advanced SQL capabilities while maintaining type safety and SQL injection protection.
+
+### ComplexQuery Structure
+
+```go
+type ComplexQuery struct {
+    Select    []string   // Custom SELECT fields (default: ["*"])
+    Distinct  bool       // Add DISTINCT keyword
+    From      string     // Main table name (required)
+    FromAlias string     // Alias for main table
+    Joins     []Join     // JOIN clauses
+    Where     *Condition // WHERE conditions (uses Condition struct)
+    GroupBy   []string   // GROUP BY fields
+    Having    string     // HAVING clause
+    OrderBy   []string   // ORDER BY fields
+    Limit     int        // LIMIT value
+    Offset    int        // OFFSET value
+    CTE       string     // Common Table Expression (WITH clause)
+}
+
+type Join struct {
+    Type      JoinType // INNER JOIN, LEFT JOIN, RIGHT JOIN, FULL OUTER JOIN, CROSS JOIN
+    Table     string   // Table to join
+    Alias     string   // Optional table alias
+    Condition string   // Join condition (e.g., "users.id = orders.user_id")
+}
+```
+
+### Basic Complex Query with Custom Fields
+
+```go
+// Select specific fields instead of SELECT *
+query := &orm.ComplexQuery{
+    Select: []string{"id", "name", "email", "created_at"},
+    From:   "users",
+    Where: &orm.Condition{
+        Field:    "status",
+        Operator: "=",
+        Value:    "active",
+    },
+    OrderBy: []string{"created_at DESC"},
+    Limit:   10,
+}
+
+records, err := db.SelectManyComplex(query)
+// Generates: SELECT id, name, email, created_at FROM users WHERE status = ? ORDER BY created_at DESC LIMIT 10
+```
+
+### Simple JOIN Query
+
+```go
+// LEFT JOIN to get users with their profiles
+query := &orm.ComplexQuery{
+    Select: []string{
+        "users.id",
+        "users.name",
+        "users.email",
+        "profiles.bio",
+        "profiles.avatar_url",
+    },
+    From: "users",
+    Joins: []orm.Join{
+        {
+            Type:      orm.LeftJoin,
+            Table:     "profiles",
+            Condition: "users.id = profiles.user_id",
+        },
+    },
+    Where: &orm.Condition{
+        Field:    "users.status",
+        Operator: "=",
+        Value:    "active",
+    },
+    OrderBy: []string{"users.created_at DESC"},
+    Limit:   20,
+}
+
+records, err := db.SelectManyComplex(query)
+// Generates: SELECT users.id, users.name, users.email, profiles.bio, profiles.avatar_url
+//            FROM users LEFT JOIN profiles ON users.id = profiles.user_id
+//            WHERE users.status = ? ORDER BY users.created_at DESC LIMIT 20
+```
+
+### Aggregate Functions with GROUP BY
+
+```go
+// Get user order statistics with aggregation
+query := &orm.ComplexQuery{
+    Select: []string{
+        "users.id",
+        "users.name",
+        "COUNT(orders.id) as order_count",
+        "SUM(orders.total) as total_spent",
+        "AVG(orders.total) as avg_order_value",
+        "MAX(orders.created_at) as last_order_date",
+    },
+    From: "users",
+    Joins: []orm.Join{
+        {
+            Type:      orm.LeftJoin,
+            Table:     "orders",
+            Condition: "users.id = orders.user_id",
+        },
+    },
+    Where: &orm.Condition{
+        Field:    "users.status",
+        Operator: "=",
+        Value:    "active",
+    },
+    GroupBy: []string{"users.id", "users.name"},
+    Having:  "COUNT(orders.id) > 5",
+    OrderBy: []string{"order_count DESC", "total_spent DESC"},
+    Limit:   10,
+}
+
+records, err := db.SelectManyComplex(query)
+// Generates: SELECT users.id, users.name, COUNT(orders.id) as order_count,
+//                   SUM(orders.total) as total_spent, AVG(orders.total) as avg_order_value,
+//                   MAX(orders.created_at) as last_order_date
+//            FROM users LEFT JOIN orders ON users.id = orders.user_id
+//            WHERE users.status = ?
+//            GROUP BY users.id, users.name
+//            HAVING COUNT(orders.id) > 5
+//            ORDER BY order_count DESC, total_spent DESC LIMIT 10
+
+// Access aggregated data
+for _, record := range records {
+    fmt.Printf("User: %s, Orders: %v, Total Spent: %v, Avg: %v\n",
+        record.Data["name"],
+        record.Data["order_count"],
+        record.Data["total_spent"],
+        record.Data["avg_order_value"])
+}
+```
+
+### Multiple JOINs
+
+```go
+// Query across multiple related tables
+query := &orm.ComplexQuery{
+    Select: []string{
+        "users.name as customer_name",
+        "orders.order_number",
+        "orders.total",
+        "products.name as product_name",
+        "order_items.quantity",
+        "order_items.price",
+    },
+    From: "users",
+    Joins: []orm.Join{
+        {
+            Type:      orm.InnerJoin,
+            Table:     "orders",
+            Condition: "users.id = orders.user_id",
+        },
+        {
+            Type:      orm.InnerJoin,
+            Table:     "order_items",
+            Condition: "orders.id = order_items.order_id",
+        },
+        {
+            Type:      orm.InnerJoin,
+            Table:     "products",
+            Condition: "order_items.product_id = products.id",
+        },
+    },
+    Where: &orm.Condition{
+        Logic: "AND",
+        Nested: []orm.Condition{
+            {Field: "users.status", Operator: "=", Value: "active"},
+            {Field: "orders.status", Operator: "=", Value: "completed"},
+        },
+    },
+    OrderBy: []string{"orders.created_at DESC"},
+    Limit:   50,
+}
+
+records, err := db.SelectManyComplex(query)
+// Generates: SELECT users.name as customer_name, orders.order_number, orders.total,
+//                   products.name as product_name, order_items.quantity, order_items.price
+//            FROM users
+//            INNER JOIN orders ON users.id = orders.user_id
+//            INNER JOIN order_items ON orders.id = order_items.order_id
+//            INNER JOIN products ON order_items.product_id = products.id
+//            WHERE (users.status = ? AND orders.status = ?)
+//            ORDER BY orders.created_at DESC LIMIT 50
+```
+
+### DISTINCT Queries
+
+```go
+// Get unique cities where active users are located
+query := &orm.ComplexQuery{
+    Select:   []string{"city", "country"},
+    Distinct: true,
+    From:     "users",
+    Where: &orm.Condition{
+        Field:    "status",
+        Operator: "=",
+        Value:    "active",
+    },
+    OrderBy: []string{"country", "city"},
+}
+
+records, err := db.SelectManyComplex(query)
+// Generates: SELECT DISTINCT city, country FROM users WHERE status = ? ORDER BY country, city
+```
+
+### SelectOneComplex - Single Record with JOINs
+
+```go
+// Get a specific user with their profile (must return exactly one row)
+query := &orm.ComplexQuery{
+    Select: []string{
+        "users.*",
+        "profiles.bio",
+        "profiles.avatar_url",
+        "profiles.location",
+    },
+    From: "users",
+    Joins: []orm.Join{
+        {
+            Type:      orm.InnerJoin,
+            Table:     "profiles",
+            Condition: "users.id = profiles.user_id",
+        },
+    },
+    Where: &orm.Condition{
+        Field:    "users.id",
+        Operator: "=",
+        Value:    123,
+    },
+}
+
+record, err := db.SelectOneComplex(query)
+if err != nil {
+    if err == orm.ErrSQLNoRows {
+        fmt.Println("User not found")
+    } else if err == orm.ErrSQLMoreThanOneRow {
+        fmt.Println("Expected one user, found multiple")
+    } else {
+        log.Fatal(err)
+    }
+}
+
+fmt.Printf("User: %v\n", record.Data)
+```
+
+### Complex Queries with Nested Conditions
+
+```go
+// Combine complex JOINs with nested WHERE conditions
+query := &orm.ComplexQuery{
+    Select: []string{
+        "users.id",
+        "users.name",
+        "COUNT(orders.id) as order_count",
+    },
+    From: "users",
+    Joins: []orm.Join{
+        {
+            Type:      orm.LeftJoin,
+            Table:     "orders",
+            Condition: "users.id = orders.user_id",
+        },
+    },
+    Where: &orm.Condition{
+        Logic: "OR",
+        Nested: []orm.Condition{
+            {
+                // Active US users over 18
+                Logic: "AND",
+                Nested: []orm.Condition{
+                    {Field: "users.age", Operator: ">", Value: 18},
+                    {Field: "users.country", Operator: "=", Value: "USA"},
+                    {Field: "users.status", Operator: "=", Value: "active"},
+                },
+            },
+            {
+                // Or premium users from any country
+                Logic: "AND",
+                Nested: []orm.Condition{
+                    {Field: "users.subscription", Operator: "=", Value: "premium"},
+                    {Field: "users.verified", Operator: "=", Value: true},
+                },
+            },
+        },
+    },
+    GroupBy: []string{"users.id", "users.name"},
+    OrderBy: []string{"order_count DESC"},
+    Limit:   25,
+}
+
+records, err := db.SelectManyComplex(query)
+```
+
+### E-commerce Analytics Example
+
+```go
+// Product performance report with multiple metrics
+query := &orm.ComplexQuery{
+    Select: []string{
+        "products.id",
+        "products.name",
+        "categories.name as category_name",
+        "COUNT(DISTINCT orders.id) as total_orders",
+        "SUM(order_items.quantity) as units_sold",
+        "SUM(order_items.quantity * order_items.price) as revenue",
+        "AVG(order_items.price) as avg_price",
+    },
+    From: "products",
+    Joins: []orm.Join{
+        {
+            Type:      orm.InnerJoin,
+            Table:     "categories",
+            Condition: "products.category_id = categories.id",
+        },
+        {
+            Type:      orm.LeftJoin,
+            Table:     "order_items",
+            Condition: "products.id = order_items.product_id",
+        },
+        {
+            Type:      orm.LeftJoin,
+            Table:     "orders",
+            Condition: "order_items.order_id = orders.id AND orders.status = 'completed'",
+        },
+    },
+    Where: &orm.Condition{
+        Field:    "products.active",
+        Operator: "=",
+        Value:    true,
+    },
+    GroupBy: []string{"products.id", "products.name", "categories.name"},
+    Having:  "SUM(order_items.quantity) > 0",
+    OrderBy: []string{"revenue DESC", "units_sold DESC"},
+    Limit:   20,
+}
+
+topProducts, err := db.SelectManyComplex(query)
+```
+
+### Customer Segmentation with JOINs
+
+```go
+// Find VIP customers based on order history
+query := &orm.ComplexQuery{
+    Select: []string{
+        "users.id",
+        "users.name",
+        "users.email",
+        "COUNT(orders.id) as lifetime_orders",
+        "SUM(orders.total) as lifetime_value",
+        "AVG(orders.total) as avg_order_value",
+        "MAX(orders.created_at) as last_order_date",
+    },
+    From: "users",
+    Joins: []orm.Join{
+        {
+            Type:      orm.InnerJoin,
+            Table:     "orders",
+            Condition: "users.id = orders.user_id",
+        },
+    },
+    Where: &orm.Condition{
+        Logic: "AND",
+        Nested: []orm.Condition{
+            {Field: "users.status", Operator: "=", Value: "active"},
+            {Field: "orders.status", Operator: "=", Value: "completed"},
+        },
+    },
+    GroupBy: []string{"users.id", "users.name", "users.email"},
+    Having:  "SUM(orders.total) > 1000 AND COUNT(orders.id) > 5",
+    OrderBy: []string{"lifetime_value DESC"},
+    Limit:   100,
+}
+
+vipCustomers, err := db.SelectManyComplex(query)
+```
+
+### Available JOIN Types
+
+```go
+// All supported JOIN types
+orm.InnerJoin      // INNER JOIN
+orm.LeftJoin       // LEFT JOIN
+orm.RightJoin      // RIGHT JOIN
+orm.FullJoin       // FULL OUTER JOIN
+orm.CrossJoin      // CROSS JOIN (no ON condition needed)
+
+// Example with different JOIN types
+query := &orm.ComplexQuery{
+    Select: []string{"users.*", "profiles.bio", "settings.preferences"},
+    From:   "users",
+    Joins: []orm.Join{
+        {
+            Type:      orm.LeftJoin,
+            Table:     "profiles",
+            Condition: "users.id = profiles.user_id",
+        },
+        {
+            Type:      orm.LeftJoin,
+            Table:     "settings",
+            Condition: "users.id = settings.user_id",
+        },
+    },
+}
+```
+
+### Security Features
+
+All complex queries include built-in security:
+
+- **Table name validation**: Prevents SQL injection in table names
+- **Parameterized queries**: All WHERE values are parameterized
+- **Operator whitelisting**: Only safe SQL operators are allowed
+- **Field name validation**: Ensures valid SQL identifiers
+
+```go
+// This will fail with validation error
+badQuery := &orm.ComplexQuery{
+    From: "users; DROP TABLE users; --", // Invalid table name
+}
+
+_, err := db.SelectManyComplex(badQuery)
+// Returns: ErrInvalidTableName
+
+// This is safe - values are parameterized
+safeQuery := &orm.ComplexQuery{
+    Select: []string{"*"},
+    From:   "users",
+    Where: &orm.Condition{
+        Field:    "email",
+        Operator: "=",
+        Value:    userInput, // Safely parameterized, no SQL injection risk
+    },
+}
 ```
 
 ## Batch Operations

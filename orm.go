@@ -8,6 +8,8 @@ type Database interface {
 	SelectMany(string) (DBRecords, error) // This is almost unusable, very rare case (this is like select ALL rows from the table)
 	SelectOneWithCondition(string, *Condition) (DBRecord, error)
 	SelectManyWithCondition(string, *Condition) ([]DBRecord, error)
+	SelectManyComplex(*ComplexQuery) ([]DBRecord, error) // Complex queries with JOINs, custom fields, GROUP BY, etc.
+	SelectOneComplex(*ComplexQuery) (DBRecord, error)    // Complex query that must return exactly one row
 
 	SelectOneSQL(string) (DBRecords, error)                              // select using one sql statement
 	SelectManySQL([]string) ([]DBRecords, error)                         // select using many sql statements
