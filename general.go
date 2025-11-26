@@ -395,13 +395,71 @@ type Join struct {
 	Condition string   `json:"condition,omitempty"`  // Join condition (e.g., "users.id = orders.user_id")
 }
 
+// CommonTableExpression represents a CTE (WITH clause) in SQL.
+// CTEs allow you to define temporary named result sets that can be referenced
+// within a SELECT, INSERT, UPDATE, or DELETE statement.
+//
+// Example:
+//
+//	cte := CommonTableExpression{
+//	    Name: "active_users",
+//	    Query: &ComplexQuery{
+//	        Select: []string{"id", "name", "email"},
+//	        From:   "users",
+//	        Where:  &Condition{Field: "status", Operator: "=", Value: "active"},
+//	    },
+//	}
+type CommonTableExpression struct {
+	Name      string        `json:"name"`                 // CTE name (required)
+	Columns   []string      `json:"columns,omitempty"`    // Optional column list
+	Query     *ComplexQuery `json:"query,omitempty"`      // Structured query for CTE
+	RawSQL    string        `json:"raw_sql,omitempty"`    // Raw SQL for complex CTEs
+	Recursive bool          `json:"recursive,omitempty"`  // Whether this is a recursive CTE
+}
+
+// ToSQL converts a CTE to its SQL representation
+func (cte *CommonTableExpression) ToSQL() (string, []interface{}, error) {
+	// Validate CTE name
+	if err := ValidateTableName(cte.Name); err != nil {
+		return "", nil, fmt.Errorf("invalid CTE name: %w", err)
+	}
+
+	var values []interface{}
+	var querySQL string
+	var err error
+
+	// Use structured query if provided, otherwise use raw SQL
+	if cte.Query != nil {
+		querySQL, values, err = cte.Query.ToSQL()
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to build CTE query: %w", err)
+		}
+	} else if cte.RawSQL != "" {
+		querySQL = cte.RawSQL
+	} else {
+		return "", nil, fmt.Errorf("CTE must have either Query or RawSQL defined")
+	}
+
+	// Build CTE definition
+	cteSQL := cte.Name
+
+	// Add column list if specified
+	if len(cte.Columns) > 0 {
+		cteSQL += " (" + strings.Join(cte.Columns, ", ") + ")"
+	}
+
+	cteSQL += " AS (" + querySQL + ")"
+
+	return cteSQL, values, nil
+}
+
 // ComplexQuery represents a complex SQL query structure that supports:
 // - Custom SELECT fields (not just SELECT *)
 // - Multiple table JOINs
 // - Complex WHERE conditions (using Condition struct)
 // - GROUP BY with HAVING clauses
 // - ORDER BY, LIMIT, OFFSET
-// - DISTINCT, CTEs, and subqueries
+// - DISTINCT, CTEs (structured and raw), and subqueries
 //
 // Example usage:
 //
@@ -422,18 +480,19 @@ type Join struct {
 //	    Limit:     10,
 //	}
 type ComplexQuery struct {
-	Select   []string   `json:"select,omitempty"`   // Fields to select (default: ["*"])
-	Distinct bool       `json:"distinct,omitempty"` // Add DISTINCT keyword
-	From     string     `json:"from"`               // Main table name (required)
-	FromAlias string    `json:"from_alias,omitempty"` // Alias for main table
-	Joins    []Join     `json:"joins,omitempty"`    // JOIN clauses
-	Where    *Condition `json:"where,omitempty"`    // WHERE conditions
-	GroupBy  []string   `json:"group_by,omitempty"` // GROUP BY fields
-	Having   string     `json:"having,omitempty"`   // HAVING clause (raw SQL)
-	OrderBy  []string   `json:"order_by,omitempty"` // ORDER BY fields
-	Limit    int        `json:"limit,omitempty"`    // LIMIT value
-	Offset   int        `json:"offset,omitempty"`   // OFFSET value
-	CTE      string     `json:"cte,omitempty"`      // Common Table Expression (WITH clause)
+	Select    []string                 `json:"select,omitempty"`     // Fields to select (default: ["*"])
+	Distinct  bool                     `json:"distinct,omitempty"`   // Add DISTINCT keyword
+	From      string                   `json:"from"`                 // Main table name (required)
+	FromAlias string                   `json:"from_alias,omitempty"` // Alias for main table
+	Joins     []Join                   `json:"joins,omitempty"`      // JOIN clauses
+	Where     *Condition               `json:"where,omitempty"`      // WHERE conditions
+	GroupBy   []string                 `json:"group_by,omitempty"`   // GROUP BY fields
+	Having    string                   `json:"having,omitempty"`     // HAVING clause (raw SQL)
+	OrderBy   []string                 `json:"order_by,omitempty"`   // ORDER BY fields
+	Limit     int                      `json:"limit,omitempty"`      // LIMIT value
+	Offset    int                      `json:"offset,omitempty"`     // OFFSET value
+	CTEs      []CommonTableExpression  `json:"ctes,omitempty"`       // Structured CTEs (recommended)
+	CTERaw    string                   `json:"cte_raw,omitempty"`    // Raw CTE string (for backward compatibility)
 }
 
 // ToSQL converts a ComplexQuery to a SQL query string with parameterized values.
@@ -453,8 +512,33 @@ func (cq *ComplexQuery) ToSQL() (string, []interface{}, error) {
 	}
 
 	// CTE (WITH clause) - added first if present
-	if cq.CTE != "" {
-		queryParts = append(queryParts, cq.CTE)
+	// Support both structured CTEs and raw CTE string
+	if len(cq.CTEs) > 0 {
+		cteStrings := make([]string, 0, len(cq.CTEs))
+		recursive := false
+
+		for _, cte := range cq.CTEs {
+			cteSQL, cteValues, err := cte.ToSQL()
+			if err != nil {
+				return "", nil, fmt.Errorf("failed to build CTE: %w", err)
+			}
+			cteStrings = append(cteStrings, cteSQL)
+			values = append(values, cteValues...)
+
+			if cte.Recursive {
+				recursive = true
+			}
+		}
+
+		withClause := "WITH "
+		if recursive {
+			withClause = "WITH RECURSIVE "
+		}
+		withClause += strings.Join(cteStrings, ", ")
+		queryParts = append(queryParts, withClause)
+	} else if cq.CTERaw != "" {
+		// Fallback to raw CTE string for backward compatibility
+		queryParts = append(queryParts, cq.CTERaw)
 	}
 
 	// SELECT clause
