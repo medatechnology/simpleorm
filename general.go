@@ -375,3 +375,161 @@ func ValidateOperator(operator string) error {
 	}
 	return nil
 }
+
+// JoinType represents the type of SQL JOIN operation
+type JoinType string
+
+const (
+	InnerJoin JoinType = "INNER JOIN"
+	LeftJoin  JoinType = "LEFT JOIN"
+	RightJoin JoinType = "RIGHT JOIN"
+	FullJoin  JoinType = "FULL OUTER JOIN"
+	CrossJoin JoinType = "CROSS JOIN"
+)
+
+// Join represents a SQL JOIN clause
+type Join struct {
+	Type      JoinType `json:"type"`                 // Type of join (INNER, LEFT, RIGHT, FULL, CROSS)
+	Table     string   `json:"table"`                // Table to join
+	Alias     string   `json:"alias,omitempty"`      // Optional table alias
+	Condition string   `json:"condition,omitempty"`  // Join condition (e.g., "users.id = orders.user_id")
+}
+
+// ComplexQuery represents a complex SQL query structure that supports:
+// - Custom SELECT fields (not just SELECT *)
+// - Multiple table JOINs
+// - Complex WHERE conditions (using Condition struct)
+// - GROUP BY with HAVING clauses
+// - ORDER BY, LIMIT, OFFSET
+// - DISTINCT, CTEs, and subqueries
+//
+// Example usage:
+//
+//	query := ComplexQuery{
+//	    Select:    []string{"users.id", "users.name", "COUNT(orders.id) as order_count"},
+//	    From:      "users",
+//	    Joins: []Join{
+//	        {Type: LeftJoin, Table: "orders", Condition: "users.id = orders.user_id"},
+//	    },
+//	    Where: &Condition{
+//	        Field:    "users.status",
+//	        Operator: "=",
+//	        Value:    "active",
+//	    },
+//	    GroupBy:   []string{"users.id", "users.name"},
+//	    Having:    "COUNT(orders.id) > 5",
+//	    OrderBy:   []string{"order_count DESC"},
+//	    Limit:     10,
+//	}
+type ComplexQuery struct {
+	Select   []string   `json:"select,omitempty"`   // Fields to select (default: ["*"])
+	Distinct bool       `json:"distinct,omitempty"` // Add DISTINCT keyword
+	From     string     `json:"from"`               // Main table name (required)
+	FromAlias string    `json:"from_alias,omitempty"` // Alias for main table
+	Joins    []Join     `json:"joins,omitempty"`    // JOIN clauses
+	Where    *Condition `json:"where,omitempty"`    // WHERE conditions
+	GroupBy  []string   `json:"group_by,omitempty"` // GROUP BY fields
+	Having   string     `json:"having,omitempty"`   // HAVING clause (raw SQL)
+	OrderBy  []string   `json:"order_by,omitempty"` // ORDER BY fields
+	Limit    int        `json:"limit,omitempty"`    // LIMIT value
+	Offset   int        `json:"offset,omitempty"`   // OFFSET value
+	CTE      string     `json:"cte,omitempty"`      // Common Table Expression (WITH clause)
+}
+
+// ToSQL converts a ComplexQuery to a SQL query string with parameterized values.
+// Security: Validates table names, field names, and uses parameterized queries.
+//
+// Returns:
+//   - string: Complete SQL query with placeholders
+//   - []interface{}: Values for the parameterized query
+//   - error: Validation error if any field is invalid
+func (cq *ComplexQuery) ToSQL() (string, []interface{}, error) {
+	var queryParts []string
+	var values []interface{}
+
+	// Security: Validate main table name
+	if err := ValidateTableName(cq.From); err != nil {
+		return "", nil, err
+	}
+
+	// CTE (WITH clause) - added first if present
+	if cq.CTE != "" {
+		queryParts = append(queryParts, cq.CTE)
+	}
+
+	// SELECT clause
+	selectClause := "SELECT"
+	if cq.Distinct {
+		selectClause += " DISTINCT"
+	}
+	if len(cq.Select) == 0 {
+		selectClause += " *"
+	} else {
+		selectClause += " " + strings.Join(cq.Select, ", ")
+	}
+	queryParts = append(queryParts, selectClause)
+
+	// FROM clause
+	fromClause := "FROM " + cq.From
+	if cq.FromAlias != "" {
+		fromClause += " AS " + cq.FromAlias
+	}
+	queryParts = append(queryParts, fromClause)
+
+	// JOIN clauses
+	for _, join := range cq.Joins {
+		// Security: Validate join table name
+		if err := ValidateTableName(join.Table); err != nil {
+			return "", nil, fmt.Errorf("invalid join table: %w", err)
+		}
+
+		joinClause := string(join.Type) + " " + join.Table
+		if join.Alias != "" {
+			joinClause += " AS " + join.Alias
+		}
+		if join.Condition != "" && join.Type != CrossJoin {
+			joinClause += " ON " + join.Condition
+		}
+		queryParts = append(queryParts, joinClause)
+	}
+
+	// WHERE clause
+	if cq.Where != nil {
+		whereClause, whereValues, err := cq.Where.ToWhereString()
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to build WHERE clause: %w", err)
+		}
+		if whereClause != "" {
+			queryParts = append(queryParts, "WHERE "+whereClause)
+			values = append(values, whereValues...)
+		}
+	}
+
+	// GROUP BY clause
+	if len(cq.GroupBy) > 0 {
+		queryParts = append(queryParts, "GROUP BY "+strings.Join(cq.GroupBy, ", "))
+	}
+
+	// HAVING clause
+	if cq.Having != "" {
+		queryParts = append(queryParts, "HAVING "+cq.Having)
+	}
+
+	// ORDER BY clause
+	if len(cq.OrderBy) > 0 {
+		queryParts = append(queryParts, "ORDER BY "+strings.Join(cq.OrderBy, ", "))
+	}
+
+	// LIMIT and OFFSET
+	if cq.Offset > 0 && cq.Limit < 1 {
+		cq.Limit = DEFAULT_PAGINATION_LIMIT
+	}
+	if cq.Limit > 0 {
+		queryParts = append(queryParts, fmt.Sprintf("LIMIT %d", cq.Limit))
+	}
+	if cq.Offset > 0 {
+		queryParts = append(queryParts, fmt.Sprintf("OFFSET %d", cq.Offset))
+	}
+
+	return strings.Join(queryParts, " "), values, nil
+}

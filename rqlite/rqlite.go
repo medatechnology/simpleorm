@@ -357,6 +357,94 @@ func (db *RQLiteDirectDB) SelectManyWithCondition(tableName string, condition *o
 	return records, nil
 }
 
+// SelectManyComplex executes a complex query with JOINs, custom SELECT fields, GROUP BY, etc.
+// It supports advanced SQL features through the ComplexQuery struct.
+//
+// Example:
+//
+//	query := &orm.ComplexQuery{
+//	    Select: []string{"users.id", "users.name", "COUNT(orders.id) as order_count"},
+//	    From:   "users",
+//	    Joins: []orm.Join{
+//	        {Type: orm.LeftJoin, Table: "orders", Condition: "users.id = orders.user_id"},
+//	    },
+//	    Where: &orm.Condition{Field: "users.status", Operator: "=", Value: "active"},
+//	    GroupBy: []string{"users.id", "users.name"},
+//	    Having: "COUNT(orders.id) > 5",
+//	    OrderBy: []string{"order_count DESC"},
+//	    Limit: 10,
+//	}
+//	records, err := db.SelectManyComplex(query)
+func (db *RQLiteDirectDB) SelectManyComplex(query *orm.ComplexQuery) ([]orm.DBRecord, error) {
+	if query == nil {
+		return nil, fmt.Errorf("query cannot be nil")
+	}
+
+	// Build the SQL query from the ComplexQuery struct
+	sql, params, err := query.ToSQL()
+	if err != nil {
+		return nil, orm.WrapSelectError(fmt.Errorf("failed to build complex query: %w", err), query.From)
+	}
+
+	paramSQL := orm.ParametereizedSQL{
+		Query:  sql,
+		Values: params,
+	}
+
+	// Execute the query
+	resp, err := db.execQueryParameterized([]orm.ParametereizedSQL{paramSQL})
+	if err != nil {
+		return nil, orm.WrapErrorWithQuery(err, "SELECT", query.From, sql)
+	}
+
+	if len(resp.Results) == 0 || len(resp.Results[0].Values) == 0 {
+		return nil, orm.ErrSQLNoRows
+	}
+
+	records, err := queryResultToDBRecord(resp.Results[0], query.From)
+	if err != nil {
+		return nil, orm.WrapSelectError(err, query.From)
+	}
+
+	return records, nil
+}
+
+// SelectOneComplex executes a complex query and ensures exactly one row is returned.
+// It's similar to SelectManyComplex but validates that only one record is returned.
+//
+// Example:
+//
+//	query := &orm.ComplexQuery{
+//	    Select: []string{"users.*", "profiles.bio"},
+//	    From:   "users",
+//	    Joins: []orm.Join{
+//	        {Type: orm.InnerJoin, Table: "profiles", Condition: "users.id = profiles.user_id"},
+//	    },
+//	    Where: &orm.Condition{Field: "users.id", Operator: "=", Value: 123},
+//	}
+//	record, err := db.SelectOneComplex(query)
+func (db *RQLiteDirectDB) SelectOneComplex(query *orm.ComplexQuery) (orm.DBRecord, error) {
+	if query == nil {
+		return orm.DBRecord{}, fmt.Errorf("query cannot be nil")
+	}
+
+	// Use SelectManyComplex to get the records
+	records, err := db.SelectManyComplex(query)
+	if err != nil {
+		return orm.DBRecord{}, err
+	}
+
+	if len(records) == 0 {
+		return orm.DBRecord{}, orm.ErrSQLNoRows
+	}
+
+	if len(records) > 1 {
+		return orm.DBRecord{}, orm.ErrSQLMoreThanOneRow
+	}
+
+	return records[0], nil
+}
+
 // SelectOneSQL executes a single SQL query and returns the results
 func (db *RQLiteDirectDB) SelectOneSQL(sql string) (orm.DBRecords, error) {
 	resp, err := db.execQuery([]string{sql})
