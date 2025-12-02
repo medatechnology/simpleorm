@@ -45,4 +45,34 @@ type Database interface {
 	// and there are still more other possibilities. Same with delete.
 	// What we can actually do is DeleteOneWithCondition and DeleteManyWithCondition
 	// but might as well do it with ExecRawSQL at this moment.
+
+	// Transaction management
+	BeginTransaction() (Transaction, error) // Begin a new transaction
+}
+
+// Transaction provides transaction control similar to database/sql and sqlx
+// It allows explicit control over transaction lifecycle with Commit() and Rollback()
+type Transaction interface {
+	// Transaction control
+	Commit() error   // Commit the transaction
+	Rollback() error // Rollback the transaction
+
+	// Execute operations (non-query SQL like INSERT, UPDATE, DELETE)
+	ExecOneSQL(string) BasicSQLResult
+	ExecOneSQLParameterized(ParametereizedSQL) BasicSQLResult
+	ExecManySQL([]string) ([]BasicSQLResult, error)
+	ExecManySQLParameterized([]ParametereizedSQL) ([]BasicSQLResult, error)
+
+	// Select operations (query SQL that returns rows)
+	SelectOneSQL(string) (DBRecords, error)
+	SelectOnlyOneSQL(string) (DBRecord, error)
+	SelectOneSQLParameterized(ParametereizedSQL) (DBRecords, error)
+	SelectOnlyOneSQLParameterized(ParametereizedSQL) (DBRecord, error)
+
+	// Insert operations
+	InsertOneDBRecord(DBRecord) BasicSQLResult
+	InsertManyDBRecords([]DBRecord) ([]BasicSQLResult, error)
+	InsertManyDBRecordsSameTable([]DBRecord) ([]BasicSQLResult, error)
+	InsertOneTableStruct(TableStruct) BasicSQLResult
+	InsertManyTableStructs([]TableStruct) ([]BasicSQLResult, error)
 }

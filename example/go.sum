@@ -1,0 +1,4 @@
+github.com/lib/pq v1.10.9 h1:YXG7RB+JIjhP29X+OtkiDnYaXQwpS4JEWq7dtCCRUEw=
+github.com/lib/pq v1.10.9/go.mod h1:AlVN5x4E4T544tWzH6hKfbfQvm3HdbOxrmggDNAPY9o=
+github.com/medatechnology/goutil v0.0.3 h1:xkfIoWwSOGuZ1HNzw/Gru5Q+91/pQ91lQszi18VfIGc=
+github.com/medatechnology/goutil v0.0.3/go.mod h1:KpA5t7UvM6TOsSamUl/lzdfzjS67//MTCT2NeBockbg=

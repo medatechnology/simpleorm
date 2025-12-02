@@ -512,3 +512,60 @@ func GetStatusInfoFromResponse(raw map[string]interface{}) (orm.NodeStatusStruct
 
 	return info, nil
 }
+
+// execRequestUnified sends both queries and commands atomically to the /db/request endpoint
+// This is used for transactions to ensure all operations execute together or fail together
+func (db *RQLiteDirectDB) execRequestUnified(statements []string, paramStatements []orm.ParametereizedSQL) error {
+	// Build the unified request body
+	// The /db/request endpoint accepts an array where each element can be:
+	// - A simple string for non-parameterized queries
+	// - An array [query, param1, param2, ...] for parameterized queries
+
+	requestBody := make([]interface{}, 0, len(statements)+len(paramStatements))
+
+	// Add simple statements
+	for _, stmt := range statements {
+		requestBody = append(requestBody, stmt)
+	}
+
+	// Add parameterized statements
+	for _, paramStmt := range paramStatements {
+		paramArray := make([]interface{}, 0, len(paramStmt.Values)+1)
+		paramArray = append(paramArray, paramStmt.Query)
+		paramArray = append(paramArray, paramStmt.Values...)
+		requestBody = append(requestBody, paramArray)
+	}
+
+	// Marshal to JSON
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return fmt.Errorf("%w: failed to marshal unified request: %w", ErrRQLiteInvalidJSON, err)
+	}
+
+	// Send request to /db/request endpoint with transaction=true parameter
+	params := url.Values{}
+	params.Set("transaction", "true") // Ensure atomic execution
+
+	resp, err := db.sendRequest(http.MethodPost, ENDPOINT_UNIFIED, params, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	// The /db/request endpoint can return either ExecuteResponse or QueryResponse
+	// For transactions, we primarily care about execution success
+	var execResp ExecuteResponse
+	err = json.NewDecoder(resp.Body).Decode(&execResp)
+	if err != nil {
+		return fmt.Errorf("failed to decode unified request response: %w", err)
+	}
+
+	// Check for errors in any of the results
+	for i, result := range execResp.Results {
+		if result.Error != "" {
+			return fmt.Errorf("statement %d failed: %s", i, result.Error)
+		}
+	}
+
+	return nil
+}
