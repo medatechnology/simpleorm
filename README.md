@@ -1,10 +1,11 @@
 # SimpleORM
 
-A simple, flexible Object-Relational Mapping (ORM) library for Go that provides a unified interface for different database systems. Currently supports RQLite with plans for additional database implementations.
+A simple, flexible Object-Relational Mapping (ORM) library for Go that provides a unified interface for different database systems. Currently supports PostgreSQL and RQLite with explicit transaction support.
 
 ## Features
 
-- **Database Agnostic**: Unified interface that works across different database systems
+- **🎉 Explicit Transactions (New in v0.2.0)**: Full transaction support with `BeginTransaction()`, `Commit()`, and `Rollback()` - works like sqlx!
+- **Database Agnostic**: Unified interface that works across different database systems (PostgreSQL, RQLite)
 - **Flexible Querying**: Support for raw SQL, parameterized queries, and condition-based queries
 - **Advanced Condition Builder**: Build complex nested queries with AND/OR logic
 - **Complex Query Support**: JOINs, aggregations, GROUP BY, HAVING, DISTINCT, and CTEs
@@ -19,6 +20,7 @@ A simple, flexible Object-Relational Mapping (ORM) library for Go that provides 
 
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Transactions (New in v0.2.0)](#transactions-new-in-v020) ⭐
 - [Core Concepts](#core-concepts)
 - [Database Operations](#database-operations)
 - [Advanced Condition Queries](#advanced-condition-queries)
@@ -110,6 +112,170 @@ func main() {
     fmt.Printf("User inserted with ID: %d\n", insertResult.LastInsertID)
 }
 ```
+
+## Transactions (New in v0.2.0)
+
+SimpleORM now supports **explicit transaction control** for both PostgreSQL and RQLite, with an API similar to sqlx!
+
+### Basic Transaction Usage
+
+```go
+// Begin a transaction
+tx, err := db.BeginTransaction()
+if err != nil {
+    log.Fatal(err)
+}
+
+// Perform operations within transaction
+user := orm.DBRecord{
+    TableName: "users",
+    Data: map[string]interface{}{
+        "name":  "Alice",
+        "email": "alice@example.com",
+        "age":   28,
+    },
+}
+
+result := tx.InsertOneDBRecord(user)
+if result.Error != nil {
+    tx.Rollback()
+    log.Fatal(result.Error)
+}
+
+// Update related data
+updateResult := tx.ExecOneSQL("UPDATE products SET stock = stock - 1 WHERE id = 1")
+if updateResult.Error != nil {
+    tx.Rollback()
+    log.Fatal(updateResult.Error)
+}
+
+// Commit the transaction
+if err := tx.Commit(); err != nil {
+    log.Fatal(err)
+}
+```
+
+### Deferred Rollback Pattern (Recommended)
+
+```go
+func transferMoney(db orm.Database, fromID, toID int, amount float64) error {
+    tx, err := db.BeginTransaction()
+    if err != nil {
+        return err
+    }
+
+    // Ensure rollback if commit doesn't happen
+    committed := false
+    defer func() {
+        if !committed {
+            tx.Rollback()
+        }
+    }()
+
+    // Deduct from sender
+    result := tx.ExecOneSQLParameterized(orm.ParametereizedSQL{
+        Query:  "UPDATE accounts SET balance = balance - $1 WHERE id = $2",
+        Values: []interface{}{amount, fromID},
+    })
+    if result.Error != nil {
+        return result.Error // defer will rollback
+    }
+
+    // Add to receiver
+    result = tx.ExecOneSQLParameterized(orm.ParametereizedSQL{
+        Query:  "UPDATE accounts SET balance = balance + $1 WHERE id = $2",
+        Values: []interface{}{amount, toID},
+    })
+    if result.Error != nil {
+        return result.Error // defer will rollback
+    }
+
+    // Commit
+    if err := tx.Commit(); err != nil {
+        return err
+    }
+
+    committed = true
+    return nil
+}
+```
+
+### PostgreSQL vs RQLite Transactions
+
+Both use the **same API**, but with different implementations:
+
+#### PostgreSQL (Stateful)
+- Operations execute immediately on server
+- Server maintains transaction state
+- SELECT sees uncommitted changes
+- N+2 network calls for N operations
+
+```go
+tx, _ := postgresDB.BeginTransaction()
+tx.InsertOneDBRecord(user)    // ← Sent to server immediately
+tx.ExecOneSQL("UPDATE ...")   // ← Sent to server immediately
+tx.Commit()                    // ← Commits on server
+```
+
+#### RQLite (Buffered)
+- Operations buffered locally
+- All sent atomically on Commit via `/db/request`
+- SELECT executes immediately (doesn't see buffered changes)
+- 1 network call for N operations (more efficient!)
+
+```go
+tx, _ := rqliteDB.BeginTransaction()
+tx.InsertOneDBRecord(user)    // ← Buffered locally
+tx.ExecOneSQL("UPDATE ...")   // ← Buffered locally
+tx.Commit()                    // ← Sends all to /db/request atomically
+```
+
+### Available Transaction Methods
+
+```go
+type Transaction interface {
+    // Transaction control
+    Commit() error
+    Rollback() error
+
+    // Execute operations
+    ExecOneSQL(string) BasicSQLResult
+    ExecOneSQLParameterized(ParametereizedSQL) BasicSQLResult
+    ExecManySQL([]string) ([]BasicSQLResult, error)
+    ExecManySQLParameterized([]ParametereizedSQL) ([]BasicSQLResult, error)
+
+    // Select operations
+    SelectOneSQL(string) (DBRecords, error)
+    SelectOnlyOneSQL(string) (DBRecord, error)
+    SelectOneSQLParameterized(ParametereizedSQL) (DBRecords, error)
+    SelectOnlyOneSQLParameterized(ParametereizedSQL) (DBRecord, error)
+
+    // Insert operations
+    InsertOneDBRecord(DBRecord) BasicSQLResult
+    InsertManyDBRecords([]DBRecord) ([]BasicSQLResult, error)
+    InsertManyDBRecordsSameTable([]DBRecord) ([]BasicSQLResult, error)
+    InsertOneTableStruct(TableStruct) BasicSQLResult
+    InsertManyTableStructs([]TableStruct) ([]BasicSQLResult, error)
+}
+```
+
+### When to Use Transactions
+
+✅ **Use transactions for:**
+- Related operations that must succeed together (transfer money, create order + update inventory)
+- Ensuring data consistency across multiple tables
+- Atomic batch operations
+
+❌ **Don't use transactions for:**
+- Single, independent operations
+- Read-only queries (SELECT)
+- Operations where partial success is acceptable
+
+### More Information
+
+- **Comprehensive Guide**: See [RQLITE-TRANSACTIONS.md](./RQLITE-TRANSACTIONS.md) for detailed documentation
+- **Examples**: See `example/transactions.go` (PostgreSQL) and `example/rqlite_transactions_example.go` (RQLite)
+- **Architecture**: Learn about the differences between stateful and buffered transactions
 
 ## Core Concepts
 
