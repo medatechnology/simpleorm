@@ -100,52 +100,79 @@ func InterfaceToSQLString(interfaceVal interface{}) string {
 	return sqlStr
 }
 
-// Convert the .sql file into each individual sql commands
-// Input is []string which are the content of the .sql file
-// Output is []string of each sql commands.
+// Convert the .sql file into each individual sql commands.
+//
+// Input is []string which are the lines of the .sql file (or of any SQL block),
+// output is []string of individual SQL statements, split on ';' boundaries.
+//
+// The splitter is aware of:
+//   - single/double/backtick quoted strings, including doubled-quote escapes
+//     ('it”s', "a""b") — a ';' inside a string never splits a statement
+//   - '--' line comments and '/* ... */' block comments (which may span lines) —
+//     a ';' inside a comment never splits a statement
+//
+// Comments are stripped from the returned statements and empty statements are
+// skipped. A statement left unterminated at the end of the input is returned
+// as-is (so multi-line statements are supported).
 func ConvertSQLCommands(lines []string) []string {
 	var commands []string
-	var currentCommand strings.Builder
+	var cur strings.Builder
+	var quote byte // 0 = outside a string; otherwise ' " or `
+	inBlockComment := false
 
 	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
+		i := 0
+		for i < len(line) {
+			ch := line[i]
+			next := byte(0)
+			if i+1 < len(line) {
+				next = line[i+1]
+			}
 
-		commentIndex := strings.Index(line, "--")
-		if commentIndex != -1 {
-			line = line[:commentIndex] // Remove comment part
-		}
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		currentCommand.WriteString(line)
-		currentCommand.WriteString(" ")
-
-		if strings.Contains(line, ";") {
-			parts := strings.Split(currentCommand.String(), ";")
-			for _, part := range parts[:len(parts)-1] { // Process parts before the last one
-				command := strings.TrimSpace(part)
-				if command != "" {
-					commands = append(commands, command)
+			switch {
+			case inBlockComment:
+				if ch == '*' && next == '/' {
+					inBlockComment = false
+					i++ // consume the '/'
+				}
+			case quote != 0:
+				cur.WriteByte(ch)
+				if ch == quote {
+					if next == quote { // doubled-quote escape, e.g. 'it''s'
+						cur.WriteByte(next)
+						i++
+					} else {
+						quote = 0
+					}
+				}
+			default:
+				switch {
+				case ch == '\'' || ch == '"' || ch == '`':
+					quote = ch
+					cur.WriteByte(ch)
+				case ch == '-' && next == '-':
+					// line comment: skip the rest of this line
+					i = len(line)
+					continue
+				case ch == '/' && next == '*':
+					inBlockComment = true
+					i++ // skip the '*'
+				case ch == ';':
+					if s := strings.TrimSpace(cur.String()); s != "" {
+						commands = append(commands, s)
+					}
+					cur.Reset()
+				default:
+					cur.WriteByte(ch)
 				}
 			}
-			currentCommand.Reset()
-			lastPart := parts[len(parts)-1]
-			currentCommand.WriteString(lastPart)
+			i++
 		}
 	}
 
-	if currentCommand.Len() > 0 {
-		command := strings.TrimSpace(currentCommand.String())
-		if command != "" {
-			commands = append(commands, command)
-		}
+	if s := strings.TrimSpace(cur.String()); s != "" {
+		commands = append(commands, s)
 	}
-
 	return commands
 }
 

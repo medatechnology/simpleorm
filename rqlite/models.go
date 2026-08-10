@@ -23,8 +23,11 @@ const (
 	DEFAULT_MAX_IDLE_CONNECTIONS_PER_HOST = 100
 	DEFAULT_MAX_CONNECTIONS_PER_HOST      = 1000
 	DEFAULT_IDLE_CONNECTION_TIMEOUT       = 90 * time.Second
-	DEFAULT_RETRY_TIMEOUT                 = 2 * time.Second
-	DEFAULT_MAX_RETRIES                   = 3
+	// DEFAULT_RETRY_TIMEOUT is the delay between retry attempts on a failed
+	// request. 2s used to stall every failed write by 2s per retry; 200ms keeps
+	// failures fast while still absorbing transient raft-leader hiccups.
+	DEFAULT_RETRY_TIMEOUT = 200 * time.Millisecond
+	DEFAULT_MAX_RETRIES   = 3
 
 	// RQLite API endpoints
 	ENDPOINT_EXECUTE       = "/db/execute"
@@ -76,6 +79,7 @@ type RqliteDirectConfig struct {
 	Password    string        // Optional password for authentication
 	Timeout     time.Duration // HTTP client timeout
 	RetryCount  int           // Number of retries for failed requests
+	RetryDelay  time.Duration // Delay between retries (default DEFAULT_RETRY_TIMEOUT)
 }
 
 // RQLiteDirectDB implements the orm.Database interface for direct HTTP access to RQLite

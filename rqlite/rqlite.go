@@ -28,6 +28,25 @@ import (
 // join-read-only: user can join a cluster, but only as a read-only node.
 // remove: user can remove a node from a cluster. If a node performs an auto-remove on shutdown, then the -join-as user must have this permission.
 
+// sharedTransport is process-wide (the net/http DefaultTransport pattern):
+// every RQLiteDirectDB instance reuses ONE Transport, so keep-alive connections
+// to the same rqlite node are shared across all DB handles (the engine's
+// internal connection + every pooled per-token connection). Creating one
+// Transport per handle would open a separate socket pool per connection.
+var sharedTransport = &http.Transport{
+	Dial: (&net.Dialer{
+		Timeout:   DEFAULT_TIMEOUT,
+		KeepAlive: DEFAULT_KEEP_ALIVE,
+	}).Dial,
+	TLSHandshakeTimeout:   DEFAULT_TLS_HANDSHAKE_TIMEOUT,
+	ResponseHeaderTimeout: DEFAULT_RESPONSE_TIMEOUT,
+	ExpectContinueTimeout: DEFAULT_CONTINUE_TIMEOUT,
+	MaxIdleConns:          DEFAULT_MAX_IDLE_CONNECTIONS,
+	MaxIdleConnsPerHost:   DEFAULT_MAX_IDLE_CONNECTIONS_PER_HOST,
+	MaxConnsPerHost:       DEFAULT_MAX_CONNECTIONS_PER_HOST,
+	IdleConnTimeout:       DEFAULT_IDLE_CONNECTION_TIMEOUT,
+}
+
 // NewDatabase creates a new RQLiteDirectDB instance
 func NewDatabase(config RqliteDirectConfig) (*RQLiteDirectDB, error) {
 	// Set default timeout if not specified
@@ -45,25 +64,14 @@ func NewDatabase(config RqliteDirectConfig) (*RQLiteDirectDB, error) {
 	if config.RetryCount == 0 {
 		config.RetryCount = DEFAULT_MAX_RETRIES
 	}
+	// Set default retry delay if not specified
+	if config.RetryDelay == 0 {
+		config.RetryDelay = DEFAULT_RETRY_TIMEOUT
+	}
 
 	return &RQLiteDirectDB{
-		Config: config,
-		HTTPClient: &http.Client{
-			Timeout: timeout,
-			Transport: &http.Transport{
-				Dial: (&net.Dialer{
-					Timeout:   DEFAULT_TIMEOUT,
-					KeepAlive: DEFAULT_KEEP_ALIVE,
-				}).Dial,
-				TLSHandshakeTimeout:   DEFAULT_TLS_HANDSHAKE_TIMEOUT,
-				ResponseHeaderTimeout: DEFAULT_RESPONSE_TIMEOUT,
-				ExpectContinueTimeout: DEFAULT_CONTINUE_TIMEOUT,
-				MaxIdleConns:          DEFAULT_MAX_IDLE_CONNECTIONS,
-				MaxIdleConnsPerHost:   DEFAULT_MAX_IDLE_CONNECTIONS_PER_HOST,
-				MaxConnsPerHost:       DEFAULT_MAX_CONNECTIONS_PER_HOST,
-				IdleConnTimeout:       DEFAULT_IDLE_CONNECTION_TIMEOUT,
-			},
-		},
+		Config:     config,
+		HTTPClient: &http.Client{Timeout: timeout, Transport: sharedTransport},
 	}, nil
 }
 

@@ -29,6 +29,27 @@ A simple, flexible Object-Relational Mapping (ORM) library for Go that provides 
 - [Error Handling](#error-handling)
 - [Performance Tips](#performance-tips)
 
+## RQLite Driver Notes (read before using the rqlite driver)
+
+- **No queue mechanism**: the `queue` bool on insert methods is accepted for
+  interface compatibility but IGNORED by the rqlite driver. rqlite has no
+  separate queue — its raft replication log IS the queue. Do not build on it.
+- **Batched statements**: `ExecManySQL` / `SelectManySQL` send all statements in
+  ONE POST to `/db/execute` / `/db/query` (JSON array). `ExecOneSQL` is the same
+  wire call with a single-element array. Prefer batching over per-statement
+  round-trips.
+- **Retries**: failed requests retry up to `RetryCount` (default 3) with
+  `RetryDelay` (default 200ms) between attempts. Each retry re-sends a fresh
+  body (the old code reused a consumed `bytes.Buffer`, sending an EMPTY body on
+  retries).
+- **Shared transport**: all `RQLiteDirectDB` handles in a process share ONE
+  `http.Transport` (net/http DefaultTransport pattern); each handle keeps its
+  own client `Timeout`. Keep-alive sockets are reused across handles — do not
+  create one handle per connection expecting separate pools.
+- **Command splitting**: `orm.ConvertSQLCommands` is quote-aware (`' " \``
+  strings, doubled-quote escapes, `--` and `/* */` comments) — safe for `;`
+  inside string literals. Never split SQL with `strings.Split` on `;`.
+
 ## Installation
 
 ```bash

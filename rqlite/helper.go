@@ -35,14 +35,21 @@ func (db *RQLiteDirectDB) buildURL(endpoint string, params url.Values) string {
 	return db.Config.URL + endpoint
 }
 
-// sendRequest sends a HTTP request to the RQLite server with retries
-func (db *RQLiteDirectDB) sendRequest(method, endpoint string, params url.Values, body io.Reader) (*http.Response, error) {
+// sendRequest sends a HTTP request to the RQLite server with retries.
+// body is passed as []byte so each retry attempt gets a fresh reader — reusing
+// one io.Reader across attempts would send an empty body on every retry after
+// the first (bytes.Buffer is consumed on first read).
+func (db *RQLiteDirectDB) sendRequest(method, endpoint string, params url.Values, body []byte) (*http.Response, error) {
 	url := db.buildURL(endpoint, params)
 	var lastErr error
 
 	// Retry logic
 	for attempt := 0; attempt < db.Config.RetryCount; attempt++ {
-		req, err := http.NewRequest(method, url, body)
+		var reader io.Reader
+		if body != nil {
+			reader = bytes.NewReader(body)
+		}
+		req, err := http.NewRequest(method, url, reader)
 		if err != nil {
 			return nil, fmt.Errorf("%w: failed to create request: %w", ErrRQLiteConnectionFailed, err)
 		}
@@ -84,7 +91,7 @@ func (db *RQLiteDirectDB) sendRequest(method, endpoint string, params url.Values
 
 		// Wait before retrying, but only if this isn't the last attempt
 		if attempt < db.Config.RetryCount-1 {
-			time.Sleep(DEFAULT_RETRY_TIMEOUT)
+			time.Sleep(db.Config.RetryDelay)
 		}
 	}
 
@@ -99,7 +106,7 @@ func (db *RQLiteDirectDB) execQuery(queries []string) (*QueryResponse, error) {
 		return nil, fmt.Errorf("%w: failed to marshal query: %w", ErrRQLiteInvalidJSON, err)
 	}
 	// fmt.Println("execQuery RequestBody = ", requestBody)
-	resp, err := db.sendRequest(http.MethodPost, ENDPOINT_QUERY, nil, bytes.NewBuffer(requestBody))
+	resp, err := db.sendRequest(http.MethodPost, ENDPOINT_QUERY, nil, requestBody)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +137,7 @@ func (db *RQLiteDirectDB) execCommand(commands []string) (*ExecuteResponse, erro
 		return nil, fmt.Errorf("%w: failed to marshal commands: %w", ErrRQLiteInvalidJSON, err)
 	}
 
-	resp, err := db.sendRequest(http.MethodPost, ENDPOINT_EXECUTE, nil, bytes.NewBuffer(requestBody))
+	resp, err := db.sendRequest(http.MethodPost, ENDPOINT_EXECUTE, nil, requestBody)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +208,7 @@ func (db *RQLiteDirectDB) execCommandParameterized(commands []orm.Parametereized
 		return nil, fmt.Errorf("%w: failed to marshal parameterized commands: %w", ErrRQLiteInvalidJSON, err)
 	}
 
-	resp, err := db.sendRequest(http.MethodPost, ENDPOINT_EXECUTE, nil, bytes.NewBuffer(requestBody))
+	resp, err := db.sendRequest(http.MethodPost, ENDPOINT_EXECUTE, nil, requestBody)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +241,7 @@ func (db *RQLiteDirectDB) execQueryParameterized(queries []orm.ParametereizedSQL
 		return nil, fmt.Errorf("%w: failed to marshal parameterized queries: %w", ErrRQLiteInvalidJSON, err)
 	}
 
-	resp, err := db.sendRequest(http.MethodPost, ENDPOINT_QUERY, nil, bytes.NewBuffer(requestBody))
+	resp, err := db.sendRequest(http.MethodPost, ENDPOINT_QUERY, nil, requestBody)
 	if err != nil {
 		return nil, err
 	}
@@ -546,7 +553,7 @@ func (db *RQLiteDirectDB) execRequestUnified(statements []string, paramStatement
 	params := url.Values{}
 	params.Set("transaction", "true") // Ensure atomic execution
 
-	resp, err := db.sendRequest(http.MethodPost, ENDPOINT_UNIFIED, params, bytes.NewBuffer(jsonBody))
+	resp, err := db.sendRequest(http.MethodPost, ENDPOINT_UNIFIED, params, jsonBody)
 	if err != nil {
 		return err
 	}
